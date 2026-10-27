@@ -1,1 +1,37 @@
-# invoice-audit
+# 发票审核台
+
+财务部内部使用的发票自动审核工具（Windows 客户端）。上传发票后由 AI 识别字段，按公司规则自动分为「通过 / 复核 / 拦截」，人工只需处理有问题的发票，并可导出台账。
+
+## 下载
+
+到 [Releases](https://github.com/DDF-git-hub/invoice-audit/releases/latest) 下载最新版本：
+
+| 文件 | 说明 |
+| --- | --- |
+| `InvoiceAudit-Setup-版本号.exe` | 安装版（推荐），以后自动更新 |
+| `InvoiceAudit-Portable-版本号.exe` | 免安装版，双击即用，有新版时提示手动下载 |
+
+使用方法见 [使用说明.txt](使用说明.txt)。
+
+## 功能
+
+- 识别：PDF、JPG/PNG、数电票 XML；AI 服务可选通义千问、Claude 或其他 OpenAI 兼容接口
+- 审核规则：重复报销、疑似重复、抬头与税号、金额平衡、税率税额、报销期限、类别限额、大额提醒、识别置信度等，可在软件里调整
+- 复核：原件与识别结果对照，触发规则的字段高亮，可修改后重新审核，支持驳回 / 退回 / 人工通过
+- 台账：本地保存，导出 CSV（Excel 可打开）
+
+## 发布新版本
+
+修改 `package.json` 里的 `version` 并推送到 `main`，GitHub Actions 会在云端打包并发布到 Releases，已安装的客户端会自动更新。版本号不变的推送只打包不发布，安装包可在 Actions 页面下载（保留 7 天）。
+
+## 开发
+
+```bash
+npm install
+npm start        # 本地运行
+npm run dist     # 打包 Windows 版本（需在 Windows 上运行）
+```
+
+- `main.js`：主进程，负责窗口、本地数据文件、AI 接口调用、自动更新
+- `preload.js`：页面与主进程之间的安全桥接（API Key 不进入页面）
+- `renderer/`：界面与审核规则

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' data: blob:; worker-src 'self' blob:">
+<title>发票审核台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap top-in">
+    <div class="brand">
+      <div class="stamp" aria-hidden="true">审</div>
+      <p class="brand-name">发票审核台</p>
+    </div>
+    <nav class="nav" aria-label="页面">
+      <a href="#ledger" data-nav="ledger">审核台</a>
+      <a href="#review" data-nav="review">复核</a>
+      <a href="#rules" data-nav="rules">规则设置</a>
+      <a href="#ai" data-nav="ai">AI 设置</a>
+    </nav>
+    <div class="top-right">
+      <span id="saveHint">数据保存在本机</span>
+      <button class="btn" id="exportBtn" type="button">导出台账</button>
+      <button class="btn primary" id="uploadBtn" type="button"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>上传发票</button>
+    </div>
+  </div>
+</header>
+<div class="updbar" id="updateBar" role="status" hidden><div class="wrap updbar-in" id="updateBarIn"></div></div>
+<main class="wrap" id="view"><div class="empty"><span class="spin"></span>正在打开台账…</div></main>
+<input type="file" id="fileInput" multiple hidden accept="image/jpeg,image/png,image/webp,.pdf,.xml,.ofd">
+<div class="toast" id="toast" role="status" hidden></div>
+<script src="vendor/pdf.worker.min.js"></script>
+<script src="vendor/pdf.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

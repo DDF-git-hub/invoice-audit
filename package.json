@@ -1,0 +1,70 @@
+{
+  "name": "invoice-audit-desk",
+  "productName": "发票审核台",
+  "version": "1.1.0",
+  "description": "发票审核台 - 发票自动识别与审核",
+  "main": "main.js",
+  "author": "财务部",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "node scripts/copy-pdfjs.js && electron .",
+    "dist": "node scripts/copy-pdfjs.js && electron-builder --win --x64"
+  },
+  "dependencies": {
+    "electron-updater": "6.3.9"
+  },
+  "devDependencies": {
+    "electron": "33.2.1",
+    "electron-builder": "25.1.8",
+    "pdfjs-dist": "3.11.174"
+  },
+  "build": {
+    "appId": "cn.local.invoiceaudit",
+    "productName": "发票审核台",
+    "artifactName": "InvoiceAudit-${version}-${target}.${ext}",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "!renderer/**/*.map"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        "portable",
+        "nsis"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "portable": {
+      "artifactName": "InvoiceAudit-Portable-${version}.exe",
+      "unicode": true
+    },
+    "nsis": {
+      "artifactName": "InvoiceAudit-Setup-${version}.exe",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "发票审核台",
+      "unicode": true,
+      "language": "2052"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "DDF-git-hub",
+        "repo": "invoice-audit",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DDF-git-hub/invoice-audit.git"
+  }
+}

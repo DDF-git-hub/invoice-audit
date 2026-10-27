@@ -1,0 +1,61 @@
+name: 打包发布
+
+# 每次推送到 main 都会在云端打包 Windows 版本。
+# package.json 里的 version 是新版本号时，自动发布到 Releases，已安装的客户端会自动更新。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 安装依赖
+        run: npm install --no-audit --no-fund
+
+      - name: 读取版本号
+        id: ver
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          V=$(node -p "require('./package.json').version")
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          if gh release view "v$V" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "v$V 已经发布过，这次只打包不发布"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "将发布新版本 v$V"
+          fi
+
+      - name: 打包并发布新版本
+        if: steps.ver.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run dist -- --publish always
+
+      - name: 只打包（版本号没变）
+        if: steps.ver.outputs.exists == 'true'
+        run: npm run dist -- --publish never
+
+      - name: 保存安装包（7 天）
+        uses: actions/upload-artifact@v4
+        with:
+          name: invoice-audit-${{ steps.ver.outputs.version }}
+          path: dist/*.exe
+          retention-days: 7

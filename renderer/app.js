@@ -49,7 +49,10 @@ function applyLoaded(p){
     CATS.forEach(function(k){ if(!cfg.limits[k]) cfg.limits[k] = d.limits[k]; });
   }
   invoices = Array.isArray(p.invoices) ? p.invoices : [];
-  invoices.forEach(function(i){ if (i.status === 'recognizing'){ i.status = 'error'; i.err = '上次识别被中断，可重新上传或手动补录'; } });
+  invoices.forEach(function(i){
+    if (i.status === 'recognizing'){ i.status = 'error'; i.err = '上次识别被中断，可重新上传或手动补录'; }
+    if (i.status === 'error' && !i.errCode && /^还没设置 AI/.test(i.err || '')) i.errCode = 'no_ai';
+  });
   return true;
 }
 function save(){
@@ -195,7 +198,7 @@ var LV = {block:{t:'拦截', i:'✕'}, review:{t:'复核', i:'▲'}, pass:{t:'�
 var DEC = {approved:'已人工通过', rejected:'已驳回', returned:'已退回补充说明'};
 function chip(inv, au){
   if (inv.status === 'recognizing') return '<span class="chip idle"><span class="spin"></span>识别中</span>';
-  if (inv.status === 'error') return '<span class="chip block">识别失败</span>';
+  if (inv.status === 'error') return inv.errCode === 'no_ai' ? '<span class="chip review">待补录</span>' : '<span class="chip block">识别失败</span>';
   var l = LV[au.level]; return '<span class="chip ' + au.level + '">' + l.i + ' ' + l.t + '</span>';
 }
 function sortedList(audits){
@@ -338,7 +341,7 @@ function pump(){
   if (!inv){ render(); return; }
   busy = true; inv.status = 'recognizing'; render();
   recognize(inv, fileMap[inv.id]).catch(function(e){
-    inv.status = 'error'; inv.err = aiErr(e);
+    inv.status = 'error'; inv.err = aiErr(e); inv.errCode = (e && e.code) || '';
     if (e && e.code === 'no_ai' && !inv.f.buyer && cfg.companies[0]){ inv.f.buyer = cfg.companies[0].name; inv.f.buyerTax = cfg.companies[0].taxId; }
   })
   .then(function(){ busy = false; save(); render(); pump(); });
@@ -415,7 +418,7 @@ function viewLedger(){
     list.forEach(function(i){
       var au = A[i.id], issue;
       if (i.status === 'recognizing') issue = '<span class="muted">' + esc(i.file) + '</span>';
-      else if (i.status === 'error') issue = esc(i.err) + ' <span class="muted">· ' + esc(i.file) + '</span>';
+      else if (i.status === 'error') issue = (i.errCode === 'no_ai' ? '未设置 AI 识别，点开对照原件补录，或设置 AI 后重新识别' : esc(i.err)) + ' <span class="muted">· ' + esc(i.file) + '</span>';
       else { var bad = au.checks.filter(function(c){ return c.k === 'fail' || c.k === 'warn'; }); issue = bad.length ? esc(bad.map(function(c){ return c.title; }).join('；')) : '<span class="muted">—</span>'; }
       h += '<tr data-open="' + i.id + '" tabindex="0" aria-label="查看 ' + esc(i.f.seller || i.file) + '">' +
         '<td>' + chip(i, au) + (i.decision ? '<span class="decision">' + DEC[i.decision] + '</span>' : '') + '</td>' +

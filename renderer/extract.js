@@ -241,6 +241,9 @@
       rate = /%/.test(m[2]) ? snapRate(Number(m[2].replace(/%.*$/, ''))) : (/免税|\*/.test(m[2]) ? 0 : null);
       tax = m[3] ? (/\*/.test(m[3]) ? 0 : money(m[3])) : null;
       head = s.slice(0, m.index);
+    } else if ((m = s.match(new RegExp('(-?' + MONEY_BODY + ')\\s+\\S{1,6}\\s+(-?' + MONEY_BODY + ')\\s*$'))) && money(m[2]) < money(m[1])) {
+      // 税率那一格认错了：最后两个金额分别是金额和税额
+      amount = money(m[1]); tax = money(m[3] || m[2]); head = s.slice(0, m.index);
     } else {
       m = s.match(new RegExp('(-?' + MONEY_BODY + ')\\s*$'));
       if (!m) return null;

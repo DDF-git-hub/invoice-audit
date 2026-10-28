@@ -18,7 +18,7 @@ fs.mkdirSync(out, { recursive: true });
   const errors = [];
   const app = await electron.launch({
     executablePath: require('electron'), args: [root, '--no-sandbox'], cwd: root, timeout: 90000,
-    env: Object.assign({}, process.env, { INVOICE_AUDIT_USERDATA: ud })
+    env: Object.assign({}, process.env, { INVOICE_AUDIT_USERDATA: ud }, process.env.MAIL_TEST ? { INVOICE_AUDIT_MAIL_NO_SEARCH: '1' } : {})
   });
   const page = await app.firstWindow();
   page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') console.log('  [页面 ' + m.type() + '] ' + m.text().slice(0, 300)); });
@@ -162,6 +162,17 @@ fs.mkdirSync(out, { recursive: true });
       const r2 = await page.evaluate(() => ({ checked: document.querySelectorAll('.mail-file:checked').length, seen: (document.querySelector('#view').innerText.match(/已导入过/g) || []).length }));
       check(r2.checked === 0 && r2.seen >= s.expect.files, '再次检查时已导入的发票标为「已导入过」且不勾选（已导入过 ' + r2.seen + '，勾选 ' + r2.checked + '）');
       await page.screenshot({ path: path.join(out, '09-再次检查.png'), fullPage: true });
+      // 刚发来的邮件马上能查到
+      const nodemailer = require('nodemailer');
+      const tr = nodemailer.createTransport({ host: '127.0.0.1', port: Number(process.env.MAIL_SMTP_PORT || 3025), secure: false, ignoreTLS: true });
+      await tr.sendMail({ from: ZHANG, to: TO, subject: '刚开的发票', attachments: [{ filename: '刚开的.pdf', content: fs.readFileSync(path.join(dir, 'sdp-geren.pdf')) }] });
+      tr.close();
+      const t3 = Date.now();
+      await page.click('[data-act="mail-scan"]');
+      await page.waitForTimeout(300);
+      await waitIdle('[data-act="mail-scan"]:not([disabled])', 60000);
+      const r3 = await page.evaluate(() => document.querySelector('#view').innerText);
+      check(/刚开的\.pdf/.test(r3), '刚发来的邮件马上能查到（发送后 ' + ((Date.now() - t3) / 1000).toFixed(1) + ' 秒）');
     }
     s.srv.close();
   }

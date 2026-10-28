@@ -18,6 +18,7 @@ const PRESETS = {
 const INVOICE_EXT = /\.(pdf|ofd|xml|zip)$/i;
 const IMAGE_EXT = /\.(jpe?g|png|webp)$/i;
 const MAX_MESSAGES = 300;
+const RECENT_SCAN = 500;
 
 function fail(code, message) { const e = new Error(message); e.code = code; return e; }
 
@@ -156,10 +157,25 @@ async function scan(cfg, opts, seen, net, onProgress) {
     const lock = await client.getMailboxLock('INBOX', { readOnly: true });
     try {
       const uidSet = new Set();
-      for (const s of senders) {
-        onProgress('正在搜索 ' + s + ' 的邮件');
-        const r = await client.search({ from: s, since }, { uid: true });
-        (r || []).forEach((u) => uidSet.add(u));
+      // 1. 最新的邮件：直接读收件箱里最新几百封的发件人逐封核对（只读邮件头，很快）。
+      //    QQ 邮箱等服务器的搜索索引会比收信晚一两分钟，刚到的邮件用服务器搜索可能搜不到。
+      const exists = (client.mailbox && client.mailbox.exists) || 0;
+      if (exists > 0) {
+        const start = Math.max(1, exists - RECENT_SCAN + 1);
+        onProgress('正在核对最新的 ' + (exists - start + 1) + ' 封邮件');
+        for await (const m of client.fetch(start + ':*', { uid: true, envelope: true, internalDate: true })) {
+          const a = String((((m.envelope && m.envelope.from) || [])[0] || {}).address || '').toLowerCase();
+          const d = m.internalDate || (m.envelope && m.envelope.date);
+          if (senders.indexOf(a) >= 0 && (!d || new Date(d) >= since)) uidSet.add(m.uid);
+        }
+      }
+      // 2. 更早的邮件：用服务器搜索补充
+      if (!process.env.INVOICE_AUDIT_MAIL_NO_SEARCH) {
+        for (const s of senders) {
+          onProgress('正在搜索 ' + s + ' 更早的邮件');
+          const r = await client.search({ from: s, since }, { uid: true });
+          (r || []).forEach((u) => uidSet.add(u));
+        }
       }
       const uids = Array.from(uidSet).sort((a, b) => b - a).slice(0, MAX_MESSAGES);
       if (!uids.length) return { messages: [], senders, days };

@@ -27,7 +27,10 @@
     </BasicInformation>
     <IssuItemInformation>
       <ItemName>*餐饮服务*餐费</ItemName>
+      <SpecMod></SpecMod>
+      <MeaUnits></MeaUnits>
       <Quantity>1</Quantity>
+      <UnPrice>1754.72</UnPrice>
       <Amount>1754.72</Amount>
       <TaxRate>0.06</TaxRate>
       <ComTaxAm>105.28</ComTaxAm>

@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('api', {
   testAI: () => ipcRenderer.invoke('ai:test'),
   recognize: (req) => ipcRenderer.invoke('ai:recognize', req),
   saveCsv: (name, data) => ipcRenderer.invoke('file:saveCsv', { name, data }),
+  saveFile: (name, data) => ipcRenderer.invoke('file:save', { name, data }),
   openDataDir: () => ipcRenderer.invoke('app:openDataDir'),
   info: () => ipcRenderer.invoke('app:info'),
   getUpdate: () => ipcRenderer.invoke('update:get'),

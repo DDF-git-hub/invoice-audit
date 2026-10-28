@@ -46,6 +46,7 @@ async function main() {
     fs.readdirSync(src).forEach((f) => copy(path.join(src, f), out(d, f)));
   }
   copy(nm('jsqr', 'dist', 'jsQR.js'), out('jsQR.js'));
+  copy(nm('xlsx', 'dist', 'xlsx.full.min.js'), out('xlsx.full.min.js'));
   copy(nm('tesseract.js', 'dist', 'tesseract.min.js'), out('tesseract', 'tesseract.min.js'));
   copy(nm('tesseract.js', 'dist', 'worker.min.js'), out('tesseract', 'worker.min.js'));
   const coreDir = nm('tesseract.js-core');

@@ -212,6 +212,14 @@ INVOICES = [
          pwd=['03<*+2-/>9<6/>1*54+3<<0+8-/23', '/9>6-*1<+05>>7/2*35-6<0+71>49', '1<*7/0>-+2<8/96>-3*+15<0/>63', '+-2>*07/<69-1+>3<4/*8-05+7>12'],
          rows=[dict(n='*住宿服务*住宿费', u='间夜', q='1', p='528.30', a='528.30', r='6%', t='31.70')],
          qr='01,10,033002000111,38291746,528.30,20260930,12345678901234567890,ABCD'),
+    dict(kind='sdp', id='sdp-mingxi', title='电子发票（普通发票）', type='数电票（普通发票）', cat='其他',
+         no='26612000000425517093', date='2026-10-16', buyer=BUYER, buyerTax=BUYER_TAX,
+         seller='子洲县示例建材经销部', sellerTax='91610827MA6YC3K2EY',
+         amount=154381.19, tax=1543.81, total=155925.00, rate=1, items='*非金属矿物制品*红砖等', drawer='马建东',
+         rows=[dict(n='*非金属矿物制品*红砖', u='块', q='83500', p='0.6237623762376', a='52084.16', r='1%', t='520.84'),
+               dict(n='*非金属矿物制品*沙子', u='m³', q='280', p='193.0693069307', a='54059.41', r='1%', t='540.59'),
+               dict(n='*非金属矿物制品*水泥', u='吨', q='105', p='459.4059405941', a='48237.62', r='1%', t='482.38')],
+         qr='01,32,,26612000000425517093,154381.19,20261016,,5E21'),
     dict(kind='rail', id='rail', title='电子发票（铁路电子客票）', type='电子发票（铁路电子客票）', cat='交通',
          no='26319166000003651200', date='2026-10-19', buyer=BUYER, buyerTax=BUYER_TAX,
          seller='铁路电子客票（票面无销售方）', sellerTax='', amount=66.97, tax=6.03, total=73.00, rate=9, items=''),
@@ -248,6 +256,22 @@ def degrade_photo(png_bytes, angle=1.6):
     return buf.tobytes()
 
 
+def xml_items(inv):
+    out = []
+    for r in inv['rows']:
+        out.append(f"""    <IssuItemInformation>
+      <ItemName>{r['n']}</ItemName>
+      <SpecMod></SpecMod>
+      <MeaUnits>{r['u']}</MeaUnits>
+      <Quantity>{r['q']}</Quantity>
+      <UnPrice>{r['p']}</UnPrice>
+      <Amount>{r['a']}</Amount>
+      <TaxRate>{int(r['r'].rstrip('%')) / 100:.2f}</TaxRate>
+      <ComTaxAm>{r['t']}</ComTaxAm>
+    </IssuItemInformation>""")
+    return '\n'.join(out)
+
+
 def xml_for(inv):
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <EInvoice>
@@ -276,13 +300,7 @@ def xml_for(inv):
       <Drawer>{inv['drawer']}</Drawer>
       <RequestTime>{inv['date']} 12:31:05</RequestTime>
     </BasicInformation>
-    <IssuItemInformation>
-      <ItemName>{inv['items']}</ItemName>
-      <Quantity>1</Quantity>
-      <Amount>{inv['amount']:.2f}</Amount>
-      <TaxRate>{inv['rate'] / 100:.2f}</TaxRate>
-      <ComTaxAm>{inv['tax']:.2f}</ComTaxAm>
-    </IssuItemInformation>
+{xml_items(inv)}
   </EInvoiceData>
   <TaxSupervisionInfo>
     <InvoiceNumber>{inv['no']}</InvoiceNumber>
@@ -362,7 +380,15 @@ def cid_pdf(inv, path):
     c.save()
 
 
-def expected(inv, method):
+def lines_of(inv, keys=None):
+    out = []
+    for r in inv.get('rows', []):
+        l = dict(name=r['n'], unit=r['u'], qty=float(r['q']), price=float(r['p']), amount=float(r['a']), rate=float(r['r'].rstrip('%')), tax=float(r['t']))
+        out.append({k: v for k, v in l.items() if not keys or k in keys})
+    return out
+
+
+def expected(inv, method, line_keys=None):
     e = {k: inv[k] for k in ('no', 'date', 'buyer', 'buyerTax', 'seller', 'sellerTax', 'total', 'rate', 'cat')}
     if inv['amount'] is not None:
         e['amount'] = inv['amount']
@@ -373,6 +399,8 @@ def expected(inv, method):
         e['items'] = inv['items']
     e['type'] = inv['type']
     e['method'] = method
+    if inv.get('rows'):
+        e['lines'] = lines_of(inv, line_keys)
     return e
 
 
@@ -395,7 +423,7 @@ def main():
 
         # 截图类：微信截图大小（1 倍）、高清截图（2 倍）
         for iid, scale, name in [('sdp-canyin', 1, 'sdp-canyin-screenshot.png'), ('old-zhusu', 2, 'old-zhusu-hd.png'),
-                                 ('sdp-geren', 1.25, 'sdp-geren-screenshot.png')]:
+                                 ('sdp-geren', 1.25, 'sdp-geren-screenshot.png'), ('sdp-mingxi', 1.5, 'sdp-mingxi-screenshot.png')]:
             inv = byid[iid]
             pg = b.new_page(viewport={'width': 1060, 'height': 760}, device_scale_factor=scale)
             pg.set_content(html_for(inv))
@@ -418,7 +446,7 @@ def main():
 
     inv = byid['old-zhusu']
     cid_pdf(inv, os.path.join(HERE, 'old-zhusu-stsong.pdf'))
-    exp['old-zhusu-stsong.pdf'] = expected(inv, 'pdf-text')
+    exp['old-zhusu-stsong.pdf'] = expected(inv, 'pdf-text', ['name', 'amount', 'rate', 'tax'])
 
     inv = byid['sdp-canyin']
     with open(os.path.join(HERE, 'sdp-canyin.xml'), 'w', encoding='utf-8') as f:
@@ -430,7 +458,7 @@ def main():
     inv = byid['sdp-zhuanpiao']
     with open(os.path.join(HERE, 'sdp-zhuanpiao.ofd'), 'wb') as f:
         f.write(ofd_for(inv))
-    exp['sdp-zhuanpiao.ofd'] = expected(inv, 'ofd')
+    exp['sdp-zhuanpiao.ofd'] = expected(inv, 'ofd', ['name', 'amount', 'rate', 'tax'])
 
     # 二维码内容（用于二维码解码测试）
     exp['_qr'] = {i['id']: i['qr'] for i in INVOICES if i.get('qr')}

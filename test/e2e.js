@@ -18,7 +18,7 @@ fs.mkdirSync(out, { recursive: true });
   const errors = [];
   const app = await electron.launch({
     executablePath: require('electron'), args: [root, '--no-sandbox'], cwd: root, timeout: 90000,
-    env: Object.assign({}, process.env, { INVOICE_AUDIT_USERDATA: ud }, process.env.MAIL_TEST ? { INVOICE_AUDIT_MAIL_NO_SEARCH: '1' } : {})
+    env: Object.assign({}, process.env, { INVOICE_AUDIT_USERDATA: ud, INVOICE_AUDIT_EXPORT_DIR: path.join(ud, 'export') }, process.env.MAIL_TEST ? { INVOICE_AUDIT_MAIL_NO_SEARCH: '1' } : {})
   });
   const page = await app.firstWindow();
   page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') console.log('  [页面 ' + m.type() + '] ' + m.text().slice(0, 300)); });
@@ -175,6 +175,55 @@ fs.mkdirSync(out, { recursive: true });
       check(/刚开的\.pdf/.test(r3), '刚发来的邮件马上能查到（发送后 ' + ((Date.now() - t3) / 1000).toFixed(1) + ' 秒）');
     }
     s.srv.close();
+  }
+
+  // ---------- 导出 Excel ----------
+  {
+    console.log('\n[导出 Excel]');
+    const XLSX = require('xlsx');
+    const exportDir = path.join(ud, 'export');
+    const chk = (ok, msg) => { console.log((ok ? '  ✓ ' : '  ✗ ') + msg); if (!ok) mustFail++; };
+    const exportAs = async (sender, shot) => {
+      await page.evaluate(() => { location.hash = 'ledger'; });
+      await page.waitForTimeout(300);
+      await page.click('#exportBtn');
+      await page.waitForSelector('#ex-sender');
+      await page.selectOption('#ex-sender', sender);
+      if (shot) await page.screenshot({ path: path.join(out, shot) });
+      const before = fs.existsSync(exportDir) ? fs.readdirSync(exportDir).length : 0;
+      await page.click('[data-act="ex-go"]');
+      for (let k = 0; k < 40; k++) {
+        const files = fs.existsSync(exportDir) ? fs.readdirSync(exportDir) : [];
+        if (files.length > before) { await page.waitForTimeout(300); return path.join(exportDir, files.sort((a, b) => fs.statSync(path.join(exportDir, b)).mtimeMs - fs.statSync(path.join(exportDir, a)).mtimeMs)[0]); }
+        await page.waitForTimeout(250);
+      }
+      return null;
+    };
+    const led = JSON.parse(fs.readFileSync(path.join(ud, 'ledger.json'), 'utf8'));
+    const f1 = await exportAs('', '10-导出窗口.png');
+    chk(!!f1, '导出全部：' + (f1 ? path.basename(f1) : '没有生成文件'));
+    if (f1) {
+      const wb = XLSX.readFile(f1);
+      chk(JSON.stringify(wb.SheetNames) === JSON.stringify(['发票汇总', '发票明细']), '两张表：' + wb.SheetNames.join('、'));
+      const sum = XLSX.utils.sheet_to_json(wb.Sheets['发票汇总']), det = XLSX.utils.sheet_to_json(wb.Sheets['发票明细']);
+      const ready = led.invoices.filter((i) => i.status === 'ready').length;
+      chk(sum.length === ready, '发票汇总 ' + sum.length + ' 行（台账 ' + ready + ' 张）');
+      const mx = det.filter((r) => r['发票号码'] === '26612000000425517093');
+      const mxs = mx.map((r) => r['项目名称'] + '/' + r['单位'] + '/' + r['数量'] + '/' + r['单价'] + '/' + r['金额']);
+      chk(mx.length >= 3 && mx.length % 3 === 0, '3 行明细的发票在明细表里有 ' + mx.length + ' 行：' + mxs.slice(0, 3).join('；'));
+      const first = mx.find((r) => /红砖/.test(r['项目名称']));
+      chk(first && first['单位'] === '块' && first['数量'] === 83500 && Math.abs(first['单价'] - 0.6237623762376) < 1e-9 && first['金额'] === 52084.16, '红砖这一行的单位、数量、单价、金额都对');
+      chk(typeof sum[0]['发票号码'] === 'string' && sum.every((r) => !/E\+/.test(String(r['发票号码']))), '发票号码按文字保存，不会变成科学计数法');
+    }
+    if (process.env.MAIL_TEST) {
+      const f2 = await exportAs('zhangsan@test.local');
+      chk(!!f2 && /张三/.test(path.basename(f2)), '按提交人导出：' + (f2 ? path.basename(f2) : '没有生成文件'));
+      if (f2) {
+        const wb = XLSX.readFile(f2);
+        const sum = XLSX.utils.sheet_to_json(wb.Sheets['发票汇总']);
+        chk(sum.length === 4 && sum.every((r) => r['提交人邮箱'] === 'zhangsan@test.local'), '只导出了张三的 ' + sum.length + ' 张发票');
+      }
+    }
   }
 
   fs.writeFileSync(path.join(out, 'e2e-report.json'), JSON.stringify(report, null, 2));

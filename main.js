@@ -186,6 +186,24 @@ ipcMain.handle('file:saveCsv', wrap(async ({ name, data }) => {
   shell.showItemInFolder(r.filePath);
   return { saved: true, path: r.filePath };
 }));
+ipcMain.handle('file:save', wrap(async ({ name, data }) => {
+  // 测试时直接写到指定文件夹，不弹保存窗口
+  if (process.env.INVOICE_AUDIT_EXPORT_DIR) {
+    const p = path.join(process.env.INVOICE_AUDIT_EXPORT_DIR, path.basename(name));
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, Buffer.from(data));
+    return { saved: true, path: p };
+  }
+  const r = await dialog.showSaveDialog(win, {
+    title: '导出台账',
+    defaultPath: path.join(app.getPath('documents'), path.basename(name)),
+    filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }]
+  });
+  if (r.canceled || !r.filePath) return { saved: false };
+  fs.writeFileSync(r.filePath, Buffer.from(data));
+  shell.showItemInFolder(r.filePath);
+  return { saved: true, path: r.filePath };
+}));
 /* ---------------- 自动更新 ---------------- */
 // 安装版：后台下载新版本，下载好后提示重启更新。
 // 免安装版：不能替换自己，只提示有新版本并给出下载链接。

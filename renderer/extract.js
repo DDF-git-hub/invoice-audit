@@ -26,7 +26,9 @@
   var RADICALS = { '⻋': '车', '⻓': '长', '⻔': '门', '⻢': '马', '⻜': '飞', '⻛': '风', '⻚': '页', '⻅': '见', '⻆': '角', '⻉': '贝', '⻘': '青', '⻝': '食', '⻥': '鱼', '⻦': '鸟', '⻨': '麦', '⻩': '黄', '⻰': '龙', '⻮': '齿', '⻄': '西', '⻊': '足', '⻏': '阝', '⻖': '阝' };
   function norm(s) {
     s = String(s == null ? '' : s);
+    s = s.replace(/²/g, '\ue002').replace(/³/g, '\ue003');
     try { s = s.normalize('NFKC'); } catch (e) { /* 老环境没有 normalize */ }
+    s = s.replace(/\ue002/g, '²').replace(/\ue003/g, '³');
     return s
       .replace(/[⺀-⻿]/g, function (c) { return RADICALS[c] || c; })
       .replace(/[！-～]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xfee0); })
@@ -107,7 +109,8 @@
   }
 
   /* ---------- 金额 ---------- */
-  var MONEY = '(\\d{1,3}(?:,\\d{3})+\\.\\d{2}|\\d+[.,]\\d{2})(?![\\d])';
+  var MONEY_BODY = '(?:\\d{1,3}(?:,\\d{3})+\\.\\d{2}|\\d+[.,]\\d{2})(?![\\d])';
+  var MONEY = '(' + MONEY_BODY + ')';
   function money(s) {
     if (s == null) return null;
     var t = String(s).replace(/\s/g, '');
@@ -222,6 +225,85 @@
       if (c.indexOf(TAX_CLASSES[i]) === 0 && c.length > TAX_CLASSES[i].length) return '*' + TAX_CLASSES[i] + '*' + c.slice(TAX_CLASSES[i].length);
     }
     return c.length >= 2 ? c : '';
+  }
+
+  /* ---------- 明细行 ---------- */
+  // 每行：项目名称 规格型号 单位 数量 单价 金额 税率 税额（规格、单位、数量、单价可能为空）
+  var NUM_RE = /^-?\d{1,3}(?:,\d{3})+(?:\.\d+)?$|^-?\d+(?:\.\d+)?$/;
+  function toNum(t) { var n = Number(String(t).replace(/,/g, '')); return isFinite(n) ? n : null; }
+  function parseLineRow(row) {
+    var s = row.replace(/[¥Y](?=\d)/g, '').trim();
+    // 从右往左：税额、税率、金额
+    var m = s.match(new RegExp('(-?' + MONEY_BODY + ')\\s*(\\d{1,2}(?:\\.\\d)?%\\S{0,2}|免税|不征税|\\*{2,})\\s*(-?' + MONEY_BODY + '|\\*{2,})?\\s*$'));
+    var amount, rate = null, tax = null, head;
+    if (m) {
+      amount = money(m[1]);
+      rate = /%/.test(m[2]) ? snapRate(Number(m[2].replace(/%.*$/, ''))) : (/免税|\*/.test(m[2]) ? 0 : null);
+      tax = m[3] ? (/\*/.test(m[3]) ? 0 : money(m[3])) : null;
+      head = s.slice(0, m.index);
+    } else {
+      m = s.match(new RegExp('(-?' + MONEY_BODY + ')\\s*$'));
+      if (!m) return null;
+      amount = money(m[1]); head = s.slice(0, m.index);
+    }
+    if (amount == null) return null;
+    var cells = head.split('\t').map(function (c) { return c.trim(); }).filter(Boolean);
+    var name = cells.shift() || '';
+    var rest = [];
+    cells.forEach(function (c) { c.split(/ +/).forEach(function (t) { if (t) rest.push(t); }); });
+    if (!cells.length && / /.test(name)) {
+      // 没有分栏信息：名称和后面的数字按空格切
+      var parts = name.split(/ +/);
+      name = parts.shift(); rest = parts.concat(rest);
+    }
+    var nums = [];
+    while (rest.length && NUM_RE.test(rest[rest.length - 1]) && nums.length < 2) nums.unshift(toNum(rest.pop()));
+    var qty = null, price = null;
+    if (nums.length === 2) { qty = nums[0]; price = nums[1]; }
+    else if (nums.length === 1) { if (Math.abs(nums[0] - amount) < 0.01 || !Number.isInteger(nums[0])) price = nums[0]; else qty = nums[0]; }
+    // 数量粘在名称末尾（如“餐费1”）：用 数量 × 单价 = 金额 验证后拆开
+    if (qty == null && price != null) {
+      var tail = name.match(/^(.*[^\d.])(\d+(?:\.\d+)?)$/);
+      if (tail && Math.abs(Number(tail[2]) * price - amount) <= Math.max(0.02, Math.abs(amount) * 0.001)) { name = tail[1]; qty = Number(tail[2]); }
+    }
+    var unit = '', spec = '';
+    if (rest.length) {
+      var last = rest[rest.length - 1];
+      if (last.length <= 4 && !/^\d/.test(last)) unit = rest.pop();
+      spec = rest.join(' ');
+    }
+    // 文字识别把数量 1 认成了“工、l、I、|”
+    if (qty == null && price != null && Math.abs(price - amount) < 0.01 && /^[工lI|丨i]$/.test(unit)) {
+      qty = 1; unit = '';
+      if (rest.length && rest[rest.length - 1].length <= 4 && !/^\d/.test(rest[rest.length - 1])) unit = rest.pop();
+      spec = rest.join(' ');
+    }
+    else if (qty == null && price != null && Math.abs(price - amount) < 0.01 && rest.length && /^[工lI|丨i]$/.test(rest[rest.length - 1])) { qty = 1; rest.pop(); spec = rest.join(' '); }
+    // 税率认错（如 6% 认成 69%）：用 税额 ÷ 金额 推算
+    if (rate == null && tax != null && amount) rate = snapRate(Math.round(tax / amount * 1000) / 10);
+    if (!name || !/[\u3400-\u9fff*A-Za-z]/.test(name)) return null;
+    return { name: name, spec: spec, unit: unit, qty: qty, price: price, amount: amount, rate: rate, tax: tax };
+  }
+  function parseLines(rows) {
+    var start = -1, end = rows.length, i;
+    for (i = 0; i < rows.length; i++) if (/项目名称|货物或应税|服务名称/.test(rows[i])) { start = i; break; }
+    if (start < 0) return [];
+    for (i = start + 1; i < rows.length; i++) if (/^合\s*计|价税合计|^小\s*计/.test(rows[i].replace(/^[\t ]+/, ''))) { end = i; break; }
+    var lines = [];
+    for (i = start + 1; i < end; i++) {
+      var row = rows[i];
+      if (!row.trim() || /详见.*清单/.test(row)) continue;
+      var l = parseLineRow(row);
+      if (l) { lines.push(l); continue; }
+      // 没有金额的行：多半是上一行项目名称太长折到了下一行
+      var txt = row.split('\t')[0].trim();
+      if (!lines.length || !txt || /\d{3,}/.test(txt) || txt.length > 30) continue;
+      var prev = lines[lines.length - 1];
+      // 名称掉到了数字下一行（照片倾斜时常见），上一行的“名称”其实是单位
+      if (/^[*※]/.test(txt) && !/\*/.test(prev.name) && prev.name.length <= 3) { if (!prev.unit) prev.unit = prev.name; prev.name = txt; }
+      else prev.name += txt;
+    }
+    return lines.slice(0, 200);
   }
 
   /* ---------- 名称 ---------- */
@@ -368,7 +450,9 @@
     // 项目名称
     var items = [], ir = /\*[^*\s\d¥]{1,20}\*[^\s*¥\d%]{0,30}/g;
     while ((m = ir.exec(flat))) if (items.indexOf(m[0]) < 0) items.push(m[0]);
-    if (items.length) f.items = items[0] + (items.length > 1 ? '等' : '');
+    f.lines = parseLines(rows);
+    if (f.lines.length > 1) items = f.lines.map(function (l) { return l.name; }).filter(function (n) { return /^\*/.test(n); }).concat(items);
+    if (items.length) f.items = items[0] + (items.length > 1 || f.lines.length > 1 ? '等' : '');
     if (!f.items) {
       // 文字识别常把 * 认成别的符号：取表头下一行的第一栏，并还原成 *类别*名称 的格式
       for (var ri = 0; ri < rows.length - 1 && !f.items; ri++) {
@@ -378,7 +462,14 @@
           f.items = itemFromCell(rows[rj].split('\t')[0]);
         }
       }
+      if (f.items && f.lines.length > 1 && !/等$/.test(f.items)) f.items += '等';
     }
+    // 明细名称里 * 号丢了（文字识别常见）：按税收分类还原
+    f.lines.forEach(function (l) {
+      if (!/^\*/.test(l.name)) { var fixed = itemFromCell(l.name); if (/^\*/.test(fixed)) l.name = fixed; }
+      if (l.rate == null && f.rate != null && f.lines.length === 1) l.rate = f.rate;
+    });
+    if (f.lines.length === 1 && f.items && !/等$/.test(f.items) && f.lines[0].name !== f.items && /^\*/.test(f.items)) f.lines[0].name = f.items;
 
     if (isRail) {
       f.type = f.type || '电子发票（铁路电子客票）';
@@ -554,6 +645,20 @@
       else { var rv = Number(rate.replace('%', '')); if (isFinite(rv)) f.rate = snapRate(/%/.test(rate) || rv >= 1 ? rv : rv * 100); }
     }
     f.items = g('ItemName', 'XMMC', 'Xmmc', 'GoodsName', 'SPMC');
+    f.lines = [];
+    var blockRe = /<((?:[\w.-]+:)?(?:IssuItemInformation|IssueItemInformation|ItemInformation|GoodsInfo|Fpmx|FPMX|InvoiceDetail))\b[^>]*>([\s\S]*?)<\/\1>/g, bm;
+    while ((bm = blockRe.exec(xml)) && f.lines.length < 200) {
+      var b = bm[2], gb = function () { return xmlTag(b, Array.prototype.slice.call(arguments)); };
+      var rt = gb('TaxRate', 'SL', 'Sl', 'Slv'), rn = null;
+      if (rt) { if (/免税/.test(rt)) rn = 0; else { var rv2 = Number(rt.replace('%', '')); if (isFinite(rv2)) rn = snapRate(/%/.test(rt) || rv2 >= 1 ? rv2 : rv2 * 100); } }
+      var nmb = gb('ItemName', 'XMMC', 'Xmmc', 'GoodsName', 'SPMC', 'Spmc');
+      var amt = money(gb('Amount', 'JE', 'Je', 'XMJE'));
+      if (!nmb && amt == null) continue;
+      var q = gb('Quantity', 'SPSL', 'XMSL', 'Spsl'), pr = gb('UnPrice', 'UnitPrice', 'DJ', 'XMDJ', 'Dj');
+      f.lines.push({ name: nmb, spec: gb('SpecMod', 'Specification', 'GGXH', 'Ggxh'), unit: gb('MeaUnits', 'Unit', 'DW', 'Dw', 'JLDW'),
+        qty: q === '' ? null : Number(q), price: pr === '' ? null : Number(pr), amount: amt, rate: rn, tax: money(gb('ComTaxAm', 'TaxAmount', 'SE', 'Se')) });
+    }
+    if (f.lines.length > 1 && f.items && !/等$/.test(f.items)) f.items += '等';
     var tb = xml.match(/<(?:[\w.-]+:)?EInvoiceType[\s\S]*?<(?:[\w.-]+:)?LabelName>([^<]+)</);
     if (tb) {
       var tn = tb[1].trim();

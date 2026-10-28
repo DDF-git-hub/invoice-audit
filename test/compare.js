@@ -11,6 +11,17 @@ function compare(f, exp) {
     else ok = String(v == null ? '' : v) === String(e);
     if (!ok) bad.push({ k, got: v, want: e });
   }
+  if (exp.lines) {
+    const got = f.lines || [];
+    if (got.length !== exp.lines.length) bad.push({ k: 'lines', got: got.length + ' 行', want: exp.lines.length + ' 行' });
+    else exp.lines.forEach((el, i) => {
+      for (const k of Object.keys(el)) {
+        const e = el[k], v = got[i][k];
+        const ok = typeof e === 'number' ? v != null && Math.abs(Number(v) - e) <= Math.max(0.011, Math.abs(e) * 1e-9) : String(v == null ? '' : v) === String(e);
+        if (!ok) bad.push({ k: 'lines[' + i + '].' + k, got: v, want: e });
+      }
+    });
+  }
   return bad;
 }
 module.exports = { compare, KEYS };

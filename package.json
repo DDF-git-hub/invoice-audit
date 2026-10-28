@@ -1,7 +1,7 @@
 {
   "name": "invoice-audit-desk",
   "productName": "发票审核台",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "description": "发票审核台 - 发票自动识别与审核",
   "main": "main.js",
   "author": "财务部",
@@ -29,7 +29,8 @@
     "pngjs": "7.0.0",
     "jpeg-js": "0.4.4",
     "playwright-core": "1.48.2",
-    "nodemailer": "6.9.15"
+    "nodemailer": "6.9.15",
+    "xlsx": "0.18.5"
   },
   "build": {
     "appId": "cn.local.invoiceaudit",

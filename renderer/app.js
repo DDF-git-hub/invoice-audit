@@ -17,7 +17,8 @@ var RULES = [
   {id:'taxRate',   name:'税率或税额异常', how:'税率不在允许范围，或税额与金额×税率对不上', lv:'review'},
   {id:'bigAmt',    name:'大额发票',       how:'单张超过设定金额', lv:'review'},
   {id:'sellerTax', name:'销售方税号格式异常', how:'不是 15、18 或 20 位的有效格式', lv:'review'},
-  {id:'unclear',   name:'识别不清',       how:'AI 识别置信度低于 80%，或关键字段缺失', lv:'review'}
+  {id:'lineSum',   name:'明细合计不一致', how:'各行明细的金额或税额相加，与票面合计对不上', lv:'review'},
+  {id:'unclear',   name:'识别不清',       how:'识别置信度低于 80%，或关键字段缺失', lv:'review'}
 ];
 var FIELDS = [
   {k:'type', label:'发票类型'}, {k:'cat', label:'费用类别', sel:true},
@@ -153,6 +154,15 @@ function audit(inv, all){
     else add('sum', false, '金额平衡', fmtN(a) + ' + ' + fmtN(t) + ' = ' + fmtN(T));
   }
 
+  var L = (f.lines || []).filter(function(l){ return l && num(l.amount) != null; });
+  if (L.length && a != null){
+    var la = r2(L.reduce(function(x, l){ return x + num(l.amount); }, 0));
+    var lt = L.every(function(l){ return num(l.tax) != null; }) ? r2(L.reduce(function(x, l){ return x + num(l.tax); }, 0)) : null;
+    var badA = Math.abs(la - a) > 0.05, badT = lt != null && t != null && Math.abs(lt - t) > 0.05;
+    if (badA || badT) add('lineSum', true, '明细合计不一致', L.length + ' 行明细' + (badA ? '金额合计 ' + fmtN(la) + '，票面金额 ' + fmtN(a) : '') + (badA && badT ? '；' : '') + (badT ? '税额合计 ' + fmtN(lt) + '，票面税额 ' + fmtN(t) : '') + (isOcr ? ocrHint : ''), ['amount']);
+    else add('lineSum', false, '明细合计一致', L.length + ' 行明细，金额合计 ' + fmtN(la) + (lt != null ? '，税额合计 ' + fmtN(lt) : ''));
+  }
+
   if (rate != null && isFinite(rate)){
     if (cfg.rates.indexOf(rate) < 0) add('taxRate', true, '税率不在允许范围', '票面税率 ' + rate + '%，允许 ' + cfg.rates.map(function(x){ return x + '%'; }).join('、'), ['rate']);
     else if (a != null && t != null){
@@ -241,7 +251,7 @@ function makeSamples(){
       f:{type:s[0], cat:s[1], no:s[2], code:'', date:isoOffset(s[3]), buyer:s[4], buyerTax:s[5], seller:s[6], sellerTax:s[7], amount:s[8], tax:s[9], total:s[10], rate:s[11], items:s[12]}};
   });
 }
-function emptyFields(){ return {type:'', cat:'其他', no:'', code:'', date:'', buyer:'', buyerTax:'', seller:'', sellerTax:'', amount:null, tax:null, total:null, rate:null, items:''}; }
+function emptyFields(){ return {type:'', cat:'其他', no:'', code:'', date:'', buyer:'', buyerTax:'', seller:'', sellerTax:'', amount:null, tax:null, total:null, rate:null, items:'', lines:[]}; }
 
 /* ---------- 识别（内置优先，AI 可选） ---------- */
 var X = window.InvoiceExtract;
@@ -252,6 +262,7 @@ var queue = [], busy = false;
 var PROMPT = '你是中国发票信息抽取助手。附件是一张发票（可能是数电票、增值税专用/普通发票、铁路电子客票、出租车票、定额发票等）。\n' +
   '请只输出一个 JSON 对象，不要任何其他文字，字段如下：\n' +
   '{"invoice_type":"发票类型，如 数电票（普通发票）","invoice_code":"发票代码，没有则空字符串","invoice_number":"发票号码","issue_date":"YYYY-MM-DD","buyer_name":"购买方名称","buyer_tax_id":"购买方纳税人识别号/统一社会信用代码","seller_name":"销售方名称","seller_tax_id":"销售方纳税人识别号","amount":不含税金额合计(数字),"tax_amount":税额合计(数字),"total":价税合计(数字),"tax_rate":"主要税率，如 6%，免税写 免税","items":"主要项目名称，30字以内","category":"餐饮|住宿|交通|办公用品|其他 之一","confidence":0到1之间的数字，表示整体识别把握,"notes":"看不清、被遮挡或可疑之处，没有则空字符串"}\n' +
+  '另外输出 "lines" 数组，发票上每一行明细一个对象：{"name":"项目名称","spec":"规格型号","unit":"单位","quantity":数量(数字或null),"price":单价(数字或null),"amount":金额(数字),"tax_rate":"税率如 6%","tax":税额(数字)}，按票面顺序，不要合并。\n' +
   '规则：看不清的字段填空字符串或 null，绝不猜测；金额只填数字；日期统一成 YYYY-MM-DD；不是发票的图片 confidence 填 0 并在 notes 说明。';
 var PROMPT_XML = '你是中国发票信息抽取助手。下面是一张数电票的 XML 原文。' + PROMPT.split('\n').slice(1).join('\n') + '\n\nXML 原文：\n';
 
@@ -422,7 +433,8 @@ function applyAI(inv, r){
   inv.f = {
     type: String(r.invoice_type || ''), cat: cat, no: String(r.invoice_number || '').replace(/\s/g,''), code: String(r.invoice_code || '').replace(/\s/g,''),
     date: normDate(r.issue_date), buyer: String(r.buyer_name || '').trim(), buyerTax: normTax(r.buyer_tax_id), seller: String(r.seller_name || '').trim(), sellerTax: normTax(r.seller_tax_id),
-    amount: num(r.amount), tax: num(r.tax_amount), total: num(r.total), rate: parseRate(r.tax_rate), items: String(r.items || '')
+    amount: num(r.amount), tax: num(r.tax_amount), total: num(r.total), rate: parseRate(r.tax_rate), items: String(r.items || ''),
+    lines: (Array.isArray(r.lines) ? r.lines : []).slice(0, 200).map(function(l){ l = l || {}; return {name:String(l.name || ''), spec:String(l.spec || ''), unit:String(l.unit || ''), qty:num(l.quantity), price:num(l.price), amount:num(l.amount), rate:parseRate(l.tax_rate), tax:num(l.tax)}; })
   };
   var c = Number(r.confidence); inv.conf = isFinite(c) ? Math.max(0, Math.min(1, c)) : null;
   inv.aiNotes = String(r.notes || '');
@@ -713,6 +725,22 @@ function fieldsHtml(inv, au){
     return '<label class="fld' + (d.wide ? ' wide' : '') + (hs[d.k] ? ' hl' : '') + '" for="f-' + d.k + '">' + d.label + ctl + '</label>';
   }).join('');
 }
+function fmtQty(v){ v = num(v); if (v == null) return ''; return String(Math.round(v * 1e8) / 1e8); }
+function linesTable(f, m){
+  var L = f.lines || [];
+  var h = '<table><thead><tr><th>项目名称</th><th>规格型号</th><th>单位</th><th class="r">数量</th><th class="r">单价</th><th class="r">金额</th><th class="r">税率</th><th class="r">税额</th></tr></thead><tbody class="mono">';
+  if (!L.length){
+    h += '<tr><td style="font-family:var(--f-sans)">' + m('items', f.items) + '</td><td></td><td></td><td></td><td></td><td class="r">' + m('amount', num(f.amount) == null ? '' : fmtN(num(f.amount))) + '</td><td class="r">' + m('rate', f.rate == null || f.rate === '' ? '' : f.rate + '%') + '</td><td class="r">' + m('tax', num(f.tax) == null ? '' : fmtN(num(f.tax))) + '</td></tr>';
+  } else {
+    L.forEach(function(l){
+      h += '<tr><td style="font-family:var(--f-sans)"><span class="v">' + esc(l.name || '—') + '</span></td><td style="font-family:var(--f-sans)">' + esc(l.spec || '') + '</td><td style="font-family:var(--f-sans)">' + esc(l.unit || '') + '</td>' +
+        '<td class="r">' + esc(fmtQty(l.qty)) + '</td><td class="r">' + esc(fmtQty(l.price)) + '</td><td class="r"><span class="v">' + (num(l.amount) == null ? '' : fmtN(num(l.amount))) + '</span></td>' +
+        '<td class="r">' + (l.rate == null || l.rate === '' ? '' : esc(l.rate) + '%') + '</td><td class="r">' + (num(l.tax) == null ? '' : fmtN(num(l.tax))) + '</td></tr>';
+    });
+    h += '<tr class="sumrow"><td style="font-family:var(--f-sans)">合计（' + L.length + ' 行）</td><td></td><td></td><td></td><td></td><td class="r">' + m('amount', num(f.amount) == null ? '' : '¥' + fmtN(num(f.amount))) + '</td><td></td><td class="r">' + m('tax', num(f.tax) == null ? '' : '¥' + fmtN(num(f.tax))) + '</td></tr>';
+  }
+  return h + '</tbody></table>';
+}
 function paper(inv, au){
   var f = inv.f, hs = hlSet(au);
   function m(k, txt){ var t = esc(txt == null || txt === '' ? '—' : txt); return hs[k] ? '<mark>' + t + '</mark>' : '<span class="v">' + t + '</span>'; }
@@ -721,9 +749,7 @@ function paper(inv, au){
     '<div class="meta">' + (f.code ? '发票代码：' + m('code', f.code) + '<br>' : '') + '发票号码：' + m('no', f.no) + '<br>开票日期：' + m('date', dateCN(f.date)) + '</div></div>' +
     '<div class="parties"><div><b>购买方信息</b><div>名称：' + m('buyer', f.buyer) + '</div><div>统一社会信用代码：<span class="mono">' + m('buyerTax', f.buyerTax) + '</span></div></div>' +
     '<div><b>销售方信息</b><div>名称：' + m('seller', f.seller) + '</div><div>统一社会信用代码：<span class="mono">' + m('sellerTax', f.sellerTax) + '</span></div></div></div>' +
-    '<table><thead><tr><th>项目名称</th><th class="r">金额</th><th class="r">税率</th><th class="r">税额</th></tr></thead><tbody class="mono">' +
-    '<tr><td style="font-family:var(--f-sans)">' + m('items', f.items) + '</td><td class="r">' + m('amount', num(f.amount) == null ? '' : fmtN(num(f.amount))) + '</td><td class="r">' + m('rate', f.rate == null || f.rate === '' ? '' : f.rate + '%') + '</td><td class="r">' + m('tax', num(f.tax) == null ? '' : fmtN(num(f.tax))) + '</td></tr>' +
-    '<tr><td style="padding:16px"></td><td></td><td></td><td></td></tr></tbody></table>' +
+    linesTable(f, m) +
     '<div class="tot"><span>价税合计（大写）<span class="v">' + rmbUpper(T) + '</span></span><span>（小写）<span class="mono">' + m('total', T == null ? '' : '¥' + T.toFixed(2)) + '</span></span></div>' +
     '<div class="tot"><span>费用类别：' + m('cat', f.cat) + '</span><span>' + esc(f.type || '') + '</span></div></div>';
 }
@@ -971,6 +997,8 @@ document.addEventListener('click', function(e){
   var act = t.getAttribute('data-act');
   if (act === 'pick') $('#fileInput').click();
   else if (/^mail-/.test(act)) mailAction(act, t);
+  else if (act === 'ex-cancel') closeExport();
+  else if (act === 'ex-go') doExport();
   else if (act === 'open-dir') window.api.openDataDir();
   else if (act === 'upd-install'){ window.api.installUpdate(); toast('正在重启并更新…'); }
   else if (act === 'upd-open'){ if (upd && upd.url) window.api.openUpdate(upd.url); }
@@ -1051,31 +1079,86 @@ document.addEventListener('drop', function(e){
 });
 
 /* ---------- 导出 ---------- */
-function csvCell(v){ var s = String(v == null ? '' : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s; }
-function longNum(v){ return v ? '="' + v + '"' : ''; }
-function buildCsv(){
+/* 导出：先选提交人，生成 Excel（发票汇总 + 发票明细两张表） */
+function exportGroups(){
+  var ready = invoices.filter(function(i){ return i.status === 'ready'; });
+  var g = {}, manual = 0;
+  ready.forEach(function(i){ if (i.sender){ g[i.sender] = g[i.sender] || {label:senderLabel(i), n:0}; g[i.sender].n++; } else manual++; });
+  return {ready:ready, g:g, manual:manual};
+}
+function openExport(){
+  var G = exportGroups();
+  if (!G.ready.length){ toast('台账里还没有发票'); return; }
+  var def = ui.sender || '';
+  var opts = '<option value="">全部（' + G.ready.length + ' 张）</option>' +
+    Object.keys(G.g).sort().map(function(k){ return '<option value="' + esc(k) + '"' + (def === k ? ' selected' : '') + '>' + esc(G.g[k].label + '（' + k + '）') + ' · ' + G.g[k].n + ' 张</option>'; }).join('') +
+    (G.manual ? '<option value="__none"' + (def === '__none' ? ' selected' : '') + '>手动上传的 · ' + G.manual + ' 张</option>' : '');
+  var bg = document.createElement('div');
+  bg.className = 'modal-bg'; bg.id = 'export-modal';
+  bg.innerHTML = '<div class="modal" role="dialog" aria-modal="true" aria-labelledby="ex-title"><h2 id="ex-title">导出台账</h2>' +
+    '<label class="fld" for="ex-sender">导出谁的发票<select id="ex-sender">' + opts + '</select></label>' +
+    '<label class="fld" for="ex-scope">范围<select id="ex-scope"><option value="all">全部发票</option><option value="todo">只导出待处理的（拦截、复核且未处理）</option><option value="ok">只导出已通过的（自动通过和人工通过）</option></select></label>' +
+    '<p class="note">导出为 Excel 文件，包含两张表：「发票汇总」每张发票一行，「发票明细」每行明细一行。</p>' +
+    '<div class="actions"><button class="btn lg" type="button" data-act="ex-cancel">取消</button><button class="btn lg primary grow" type="button" data-act="ex-go">导出 Excel</button></div></div>';
+  document.body.appendChild(bg);
+  $('#ex-sender').focus();
+}
+function closeExport(){ var m = $('#export-modal'); if (m) m.remove(); }
+function doExport(){
+  if (!window.XLSX){ toast('导出组件没有加载，请重启软件后再试'); return; }
+  var who = $('#ex-sender').value, scope = $('#ex-scope').value;
+  closeExport();
   var A = auditAll();
-  var head = ['审核结果','处理结果','发票类型','发票代码','发票号码','开票日期','购买方','购买方税号','销售方','销售方税号','金额','税额','价税合计','税率','费用类别','项目','审核发现','复核意见','来源文件','录入方式','提交人','提交人邮箱','邮件主题','邮件时间'];
-  var rows = sortedList(A).filter(function(i){ return i.status === 'ready'; }).map(function(i){
-    var au = A[i.id], f = i.f;
-    return [LV[au.level].t, i.decision ? DEC[i.decision] : (au.level === 'pass' ? '自动通过' : '待处理'), f.type, longNum(f.code), longNum(f.no), f.date, f.buyer, f.buyerTax, f.seller, f.sellerTax,
-      num(f.amount), num(f.tax), num(f.total), f.rate == null ? '' : f.rate + '%', f.cat, f.items,
-      au.checks.filter(function(c){ return c.k === 'fail' || c.k === 'warn'; }).map(function(c){ return c.title + '：' + c.detail; }).join('；'),
-      i.memo, i.file, (i.source === 'sample' ? '示例' : i.source === 'manual' ? '手动录入' : METHOD[i.method] || (i.source === 'ai' ? 'AI 识别' : '')),
-      i.sender ? senderLabel(i) : '', i.sender || '', i.mail ? i.mail.subject : '', i.mail ? fmtDateTime(i.mail.date) : ''];
+  var list = sortedList(A).filter(function(i){
+    if (i.status !== 'ready') return false;
+    if (who === '__none' ? !!i.sender : (who && i.sender !== who)) return false;
+    var lv = A[i.id].level;
+    if (scope === 'todo') return lv !== 'pass' && !i.decision;
+    if (scope === 'ok') return lv === 'pass' || i.decision === 'approved';
+    return true;
   });
-  return '﻿' + [head].concat(rows).map(function(r){ return r.map(function(c, idx){ return (idx === 3 || idx === 4) ? c : csvCell(c); }).join(','); }).join('\r\n');
+  if (!list.length){ toast('没有符合条件的发票'); return; }
+  var res = function(i){ var lv = A[i.id].level; return LV[lv].t; };
+  var dec = function(i){ return i.decision ? DEC[i.decision] : (A[i.id].level === 'pass' ? '自动通过' : '待处理'); };
+  var issues = function(i){ return A[i.id].checks.filter(function(c){ return c.k === 'fail' || c.k === 'warn'; }).map(function(c){ return c.title + '：' + c.detail; }).join('；'); };
+  var how = function(i){ return i.source === 'sample' ? '示例' : i.source === 'manual' ? '手动录入' : METHOD[i.method] || ''; };
+  var H1 = ['提交人','提交人邮箱','审核结果','处理结果','发票类型','发票代码','发票号码','开票日期','购买方','购买方税号','销售方','销售方税号','金额','税额','价税合计','税率','费用类别','项目','明细行数','审核发现','复核意见','邮件主题','邮件时间','来源文件','识别方式'];
+  var S1 = [H1].concat(list.map(function(i){
+    var f = i.f;
+    return [senderLabel(i), i.sender || '', res(i), dec(i), f.type, f.code || '', f.no || '', f.date || '', f.buyer, f.buyerTax, f.seller, f.sellerTax,
+      num(f.amount), num(f.tax), num(f.total), f.rate == null || f.rate === '' ? '' : f.rate + '%', f.cat, f.items, (f.lines || []).length,
+      issues(i), i.memo || '', i.mail ? i.mail.subject : '', i.mail ? fmtDateTime(i.mail.date) : '', i.file || '', how(i)];
+  }));
+  var H2 = ['提交人','提交人邮箱','发票号码','开票日期','销售方','销售方税号','行号','项目名称','规格型号','单位','数量','单价','金额','税率','税额','审核结果','来源文件'];
+  var S2 = [H2];
+  list.forEach(function(i){
+    var f = i.f, L = (f.lines && f.lines.length) ? f.lines : [{name:f.items, amount:f.amount, rate:f.rate, tax:f.tax}];
+    L.forEach(function(l, n){
+      S2.push([senderLabel(i), i.sender || '', f.no || '', f.date || '', f.seller, f.sellerTax, n + 1, l.name || '', l.spec || '', l.unit || '',
+        num(l.qty), num(l.price), num(l.amount), l.rate == null || l.rate === '' ? '' : l.rate + '%', num(l.tax), res(i), i.file || '']);
+    });
+  });
+  var XL = window.XLSX, wb = XL.utils.book_new();
+  function sheet(rows, widths, moneyCols){
+    var ws = XL.utils.aoa_to_sheet(rows);
+    ws['!cols'] = widths.map(function(w){ return {wch:w}; });
+    ws['!autofilter'] = {ref: XL.utils.encode_range({s:{r:0, c:0}, e:{r:rows.length - 1, c:rows[0].length - 1}})};
+    for (var r = 1; r < rows.length; r++) moneyCols.forEach(function(c){ var cell = ws[XL.utils.encode_cell({r:r, c:c})]; if (cell && cell.t === 'n') cell.z = '#,##0.00'; });
+    return ws;
+  }
+  XL.utils.book_append_sheet(wb, sheet(S1, [10,24,8,12,18,14,24,12,26,22,26,22,12,10,12,8,10,26,8,50,24,24,16,24,16], [12,13,14]), '发票汇总');
+  XL.utils.book_append_sheet(wb, sheet(S2, [10,24,24,12,26,22,6,30,14,8,10,14,12,8,10,8,24], [12,14]), '发票明细');
+  var data = XL.write(wb, {type:'array', bookType:'xlsx'});
+  var d = new Date(), label = who === '__none' ? '手动上传' : who ? (exportGroups().g[who] || {}).label || who : '全部';
+  var name = '发票台账_' + String(label).replace(/[\\/:*?"<>|]/g, '_') + '_' + d.getFullYear() + ('0'+(d.getMonth()+1)).slice(-2) + ('0'+d.getDate()).slice(-2) + '.xlsx';
+  window.api.saveFile(name, new Uint8Array(data)).then(function(r){
+    if (!r || !r.ok) toast('导出失败：' + (r && r.message || '无法写入文件'));
+    else if (r.data && r.data.saved) toast('已导出 ' + list.length + ' 张发票、' + (S2.length - 1) + ' 行明细');
+  });
 }
 $('#uploadBtn').addEventListener('click', function(){ $('#fileInput').click(); });
-$('#exportBtn').addEventListener('click', function(){
-  var ready = invoices.filter(function(i){ return i.status === 'ready'; });
-  if (!ready.length){ toast('台账里还没有发票'); return; }
-  var csv = buildCsv(), d = new Date(), name = '发票台账_' + d.getFullYear() + ('0'+(d.getMonth()+1)).slice(-2) + ('0'+d.getDate()).slice(-2) + '.csv';
-  window.api.saveCsv(name, csv).then(function(r){
-    if (!r || !r.ok) toast('导出失败：' + (r && r.message || '无法写入文件'));
-    else if (r.data && r.data.saved) toast('已导出 ' + ready.length + ' 张，可用 Excel 打开');
-  });
-});
+$('#exportBtn').addEventListener('click', openExport);
+document.addEventListener('keydown', function(e){ if (e.key === 'Escape') closeExport(); });
 
 /* ---------- 自动更新 ---------- */
 var appVer = '', isPortable = false, upd = null;

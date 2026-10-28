@@ -216,6 +216,12 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13px;min-width:880px}
 .updbar{background:var(--accent-soft);border-bottom:1px solid var(--accent-line);color:var(--ink);font-size:13px}
 .updbar-in{padding-block:8px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .updbar .btn{height:32px;font-size:13px}
+.mailmsg{padding:12px 16px;border-top:1px solid var(--line-soft);display:flex;flex-direction:column;gap:6px}
+.mailhead{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.mailsubj{font-size:13px;color:var(--ink-2);overflow-wrap:anywhere}
+.mailfile{display:flex;align-items:center;gap:10px;font-size:13px;padding:4px 0 4px 4px;cursor:pointer;flex-wrap:wrap}
+.mailfile input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent);margin:0;flex:none}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(24px + env(safe-area-inset-bottom,0px));background:var(--inv-bg);color:var(--inv-fg);padding:10px 18px;border-radius:8px;font-size:13px;box-shadow:0 6px 24px rgba(0,0,0,.18);z-index:50;max-width:calc(100% - 32px)}
 @media (max-width:640px){
   .fgrid{grid-template-columns:minmax(0,1fr)}

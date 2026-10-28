@@ -16,5 +16,12 @@ contextBridge.exposeInMainWorld('api', {
   checkUpdate: () => ipcRenderer.invoke('update:check'),
   installUpdate: () => ipcRenderer.invoke('update:install'),
   openUpdate: (url) => ipcRenderer.invoke('update:open', url),
-  onUpdate: (cb) => { ipcRenderer.on('update', (_e, d) => cb(d)); }
+  onUpdate: (cb) => { ipcRenderer.on('update', (_e, d) => cb(d)); },
+  mailGet: () => ipcRenderer.invoke('mail:get'),
+  mailSave: (input) => ipcRenderer.invoke('mail:save', input),
+  mailTest: () => ipcRenderer.invoke('mail:test'),
+  mailScan: (opts) => ipcRenderer.invoke('mail:scan', opts),
+  mailImport: (scanId, ids) => ipcRenderer.invoke('mail:import', { scanId, ids }),
+  mailOpenLink: (url) => ipcRenderer.invoke('mail:openLink', url),
+  onMailProgress: (cb) => { ipcRenderer.on('mail-progress', (_e, t) => cb(t)); }
 });

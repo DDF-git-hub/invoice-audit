@@ -574,25 +574,29 @@
     if (eocd < 0) return Promise.reject(new Error('不是有效的 OFD 文件'));
     var count = dv.getUint16(eocd + 10, true), off = dv.getUint32(eocd + 16, true);
     var entries = [];
-    var dec = new TextDecoder('utf-8');
+    var dec = new TextDecoder('utf-8'), gbk = null;
+    try { gbk = new TextDecoder('gbk'); } catch (e) { /* 不支持 GBK 时按 UTF-8 */ }
     for (var n = 0; n < count; n++) {
       if (dv.getUint32(off, true) !== 0x02014b50) break;
-      var method = dv.getUint16(off + 10, true), csize = dv.getUint32(off + 20, true);
+      var flag = dv.getUint16(off + 8, true), method = dv.getUint16(off + 10, true), csize = dv.getUint32(off + 20, true);
       var nlen = dv.getUint16(off + 28, true), elen = dv.getUint16(off + 30, true), clen = dv.getUint16(off + 32, true);
       var loc = dv.getUint32(off + 42, true);
-      var name = dec.decode(u8.subarray(off + 46, off + 46 + nlen));
+      // Windows 里打的压缩包，中文文件名通常是 GBK 编码（没有 UTF-8 标记）
+      var raw = u8.subarray(off + 46, off + 46 + nlen);
+      var name = (flag & 0x800) || !gbk ? dec.decode(raw) : (/[^\x00-\x7f]/.test(String.fromCharCode.apply(null, raw)) ? gbk.decode(raw) : dec.decode(raw));
       entries.push({ name: name, method: method, csize: csize, loc: loc });
       off += 46 + nlen + elen + clen;
     }
     return Promise.resolve(entries.map(function (e) {
+      var readBytes = function () {
+        var lnlen = dv.getUint16(e.loc + 26, true), lelen = dv.getUint16(e.loc + 28, true);
+        var start = e.loc + 30 + lnlen + lelen, data = u8.subarray(start, start + e.csize);
+        return e.method === 0 ? Promise.resolve(data.slice()) : e.method === 8 ? inflateRaw(data) : Promise.reject(new Error('不支持的压缩方式'));
+      };
       return {
         name: e.name,
-        read: function () {
-          var lnlen = dv.getUint16(e.loc + 26, true), lelen = dv.getUint16(e.loc + 28, true);
-          var start = e.loc + 30 + lnlen + lelen, data = u8.subarray(start, start + e.csize);
-          var p = e.method === 0 ? Promise.resolve(data) : e.method === 8 ? inflateRaw(data) : Promise.reject(new Error('不支持的压缩方式'));
-          return p.then(function (b) { return dec.decode(b); });
-        }
+        readBytes: readBytes,
+        read: function () { return readBytes().then(function (b) { return dec.decode(b); }); }
       };
     }));
   }

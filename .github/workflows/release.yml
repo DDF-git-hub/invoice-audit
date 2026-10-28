@@ -19,6 +19,13 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    # 测试用邮箱服务器（模拟 QQ 邮箱收发票）
+    services:
+      greenmail:
+        image: greenmail/standalone:2.0.1
+        ports: ['3025:3025', '3143:3143']
+        env:
+          GREENMAIL_OPTS: '-Dgreenmail.setup.test.smtp -Dgreenmail.setup.test.imap -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.auth.disabled -Dgreenmail.verbose'
     steps:
       - uses: actions/checkout@v4
 
@@ -44,6 +51,10 @@ jobs:
 
       - name: 启动软件上传发票测试
         shell: bash
+        env:
+          MAIL_TEST: '1'
+          MAIL_SMTP_PORT: '3025'
+          MAIL_IMAP_PORT: '3143'
         run: xvfb-run -a --server-args="-screen 0 1600x1000x24" npm run test:e2e 2>&1 | tee test-output/e2e.log
 
       - name: 保存测试截图和报告

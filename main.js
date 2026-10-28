@@ -232,6 +232,76 @@ ipcMain.handle('update:check', wrap(async () => {
   const r = await updater.checkForUpdates();
   return { msg: r && r.updateInfo && newer(r.updateInfo.version, app.getVersion()) ? '' : '已经是最新版本' };
 }));
+/* ---------------- 邮箱收票 ---------------- */
+const mail = require('./mail.js');
+const MAIL_SETTINGS = () => path.join(dataDir(), 'mail-settings.json');
+const MAIL_SEEN = () => path.join(dataDir(), 'mail-seen.json');
+function encrypt(v) { return safeStorage.isEncryptionAvailable() ? { enc: safeStorage.encryptString(v).toString('base64') } : { plain: v }; }
+function decrypt(o) {
+  try { if (o && o.enc && safeStorage.isEncryptionAvailable()) return safeStorage.decryptString(Buffer.from(o.enc, 'base64')); } catch (e) { /* 解密失败按未设置 */ }
+  return (o && o.plain) || '';
+}
+function mailCfg() {
+  const s = readJson(MAIL_SETTINGS(), {});
+  const preset = mail.PRESETS[s.preset] ? s.preset : 'qq';
+  const p = mail.PRESETS[preset];
+  return {
+    preset, user: s.user || '',
+    host: preset === 'custom' ? (s.host || '') : p.host,
+    port: preset === 'custom' ? (Number(s.port) || 993) : p.port,
+    secure: preset === 'custom' ? s.secure !== false : p.secure,
+    pass: decrypt(s.pass)
+  };
+}
+function mailPublic() {
+  const c = mailCfg();
+  const presets = {};
+  Object.keys(mail.PRESETS).forEach((k) => { const p = mail.PRESETS[k]; presets[k] = { name: p.name, host: p.host, port: p.port, secure: p.secure }; });
+  return { preset: c.preset, user: c.user, host: c.host, port: c.port, secure: c.secure, hasPass: !!c.pass, presets };
+}
+function mailSave(input) {
+  const old = readJson(MAIL_SETTINGS(), {});
+  const out = {
+    preset: mail.PRESETS[input.preset] ? input.preset : (old.preset || 'qq'),
+    user: String(input.user || '').trim(),
+    host: String(input.host || '').trim(), port: Number(input.port) || 993, secure: input.secure !== false,
+    pass: old.pass || null
+  };
+  if (typeof input.pass === 'string' && input.pass.trim()) out.pass = encrypt(input.pass.replace(/\s/g, ''));
+  if (input.clearPass) out.pass = null;
+  writeJsonAtomic(MAIL_SETTINGS(), out);
+  return mailPublic();
+}
+let mailCache = null;
+function mailProgress(text) { if (win && !win.isDestroyed()) win.webContents.send('mail-progress', text); }
+ipcMain.handle('mail:get', wrap(async () => mailPublic()));
+ipcMain.handle('mail:save', wrap(async (input) => mailSave(input || {})));
+ipcMain.handle('mail:test', wrap(async () => mail.test(mailCfg())));
+ipcMain.handle('mail:scan', wrap(async (opts) => {
+  const seen = new Set(readJson(MAIL_SEEN(), []));
+  const r = await mail.scan(mailCfg(), opts || {}, seen, net, mailProgress);
+  mailCache = { id: String(Date.now()), messages: r.messages };
+  return {
+    scanId: mailCache.id, senders: r.senders, days: r.days,
+    messages: r.messages.map((m) => ({ uid: m.uid, from: m.from, fromName: m.fromName, subject: m.subject, date: m.date, links: m.links,
+      files: m.files.map((f) => ({ id: f.id, name: f.name, size: f.size, seen: f.seen })) }))
+  };
+}));
+ipcMain.handle('mail:import', wrap(async ({ scanId, ids }) => {
+  if (!mailCache || mailCache.id !== scanId) throw fail('mail_stale', '邮件列表已过期，请重新检查邮件');
+  const want = new Set(ids || []);
+  const seen = new Set(readJson(MAIL_SEEN(), []));
+  const out = [];
+  mailCache.messages.forEach((m) => m.files.forEach((f) => {
+    if (!want.has(f.id)) return;
+    out.push({ name: f.name, data: f.data, from: m.from, fromName: m.fromName, subject: m.subject, date: m.date });
+    seen.add(f.key); f.seen = true;
+  }));
+  writeJsonAtomic(MAIL_SEEN(), Array.from(seen).slice(-20000));
+  return out;
+}));
+ipcMain.handle('mail:openLink', wrap(async (url) => { if (/^https?:\/\//i.test(String(url))) await shell.openExternal(String(url)); return true; }));
+
 ipcMain.handle('app:openDataDir', wrap(async () => { await shell.openPath(dataDir()); return true; }));
 ipcMain.handle('app:info', wrap(async () => ({ dataDir: dataDir(), version: app.getVersion() })));
 

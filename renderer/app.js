@@ -508,11 +508,13 @@ function recognize(inv, file, opts){
     });
   });
 }
-function enqueue(files){
+function enqueue(files, metas){
   var list = Array.prototype.slice.call(files || []);
   if (!list.length) return;
   list.forEach(function(file, i){
     var inv = {id:uid() + i, createdAt:Date.now() + i, source:'file', file:file.name, status:'recognizing', stage:'排队中', conf:null, aiNotes:'', decision:null, memo:'', f:emptyFields()};
+    var meta = metas && metas[i];
+    if (meta){ inv.source = 'mail'; inv.sender = meta.sender || ''; inv.senderName = meta.senderName || ''; inv.mail = meta.mail || null; }
     invoices.unshift(inv); fileMap[inv.id] = file; queue.push({inv:inv});
   });
   save();
@@ -533,11 +535,12 @@ function pump(){
 }
 
 /* ---------- 路由与渲染 ---------- */
-var ui = {filter:'all', q:'', confirmClear:false, confirmDel:false};
+var ui = {filter:'all', q:'', sender:'', confirmClear:false, confirmDel:false};
 function route(){
   var h = (location.hash || '').replace(/^#/, '');
   if (h === 'rules') return {v:'rules'};
   if (h === 'ai') return {v:'ai'};
+  if (h === 'mail') return {v:'mail'};
   if (h === 'review') return {v:'review'};
   var m = h.match(/^review-([A-Za-z0-9]+)$/);
   if (m) return {v:'review', id:m[1]};
@@ -549,6 +552,7 @@ function render(){
   var el = $('#view');
   if (r.v === 'rules') el.innerHTML = viewRules();
   else if (r.v === 'ai') el.innerHTML = viewAI();
+  else if (r.v === 'mail') el.innerHTML = viewMail();
   else if (r.v === 'review') el.innerHTML = viewReview(r.id);
   else el.innerHTML = viewLedger();
 }
@@ -587,12 +591,20 @@ function viewLedger(){
 
   var list = sortedList(A).filter(function(i){
     if (ui.filter !== 'all'){ if (i.status !== 'ready' || A[i.id].level !== ui.filter) return false; }
-    if (ui.q){ var q = ui.q.toLowerCase(); return [i.f.no, i.f.seller, i.f.buyer, i.file, i.f.items].join(' ').toLowerCase().indexOf(q) >= 0; }
+    if (ui.sender && (ui.sender === '__none' ? !!i.sender : (i.sender || '') !== ui.sender)) return false;
+    if (ui.q){ var q = ui.q.toLowerCase(); return [i.f.no, i.f.seller, i.f.buyer, i.file, i.f.items, i.sender, i.senderName].join(' ').toLowerCase().indexOf(q) >= 0; }
     return true;
   });
 
   h += '<section class="card" aria-label="发票台账"><div class="filters">' +
     pill('all','全部', invoices.length) + pill('block','拦截', cnt.block) + pill('review','复核', cnt.review) + pill('pass','通过', cnt.pass) +
+    (function(){
+      var ss = {}; invoices.forEach(function(i){ if (i.sender) ss[i.sender] = senderLabel(i); });
+      var keys = Object.keys(ss);
+      if (!keys.length) return '';
+      return '<label class="sr" for="sender-filter">提交人</label><select id="sender-filter" class="inp" style="width:auto;height:34px;border-radius:17px"><option value="">全部提交人</option>' +
+        keys.sort().map(function(k){ return '<option value="' + esc(k) + '"' + (ui.sender === k ? ' selected' : '') + '>' + esc(ss[k] + '（' + k + '）') + '</option>'; }).join('') + '<option value="__none"' + (ui.sender === '__none' ? ' selected' : '') + '>手动上传的</option></select>';
+    })() +
     '<label class="search" for="q"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input id="q" placeholder="搜索发票号、销售方、文件名" value="' + esc(ui.q) + '"></label></div>';
 
   if (!invoices.length){
@@ -600,7 +612,7 @@ function viewLedger(){
   } else if (!list.length){
     h += '<div class="empty">没有符合条件的发票</div>';
   } else {
-    h += '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>风险</th><th>发票号码</th><th>开票日期</th><th>销售方</th><th>类别</th><th class="num">价税合计</th><th>审核发现</th></tr></thead><tbody>';
+    h += '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>风险</th><th>发票号码</th><th>开票日期</th><th>提交人</th><th>销售方</th><th>类别</th><th class="num">价税合计</th><th>审核发现</th></tr></thead><tbody>';
     list.forEach(function(i){
       var au = A[i.id], issue;
       if (i.status === 'recognizing') issue = '<span class="muted">' + esc(i.file) + (i.stage ? ' · ' + esc(i.stage) : '') + '</span>';
@@ -610,6 +622,7 @@ function viewLedger(){
         '<td>' + chip(i, au) + (i.decision ? '<span class="decision">' + DEC[i.decision] + '</span>' : '') + '</td>' +
         '<td class="mono nowrap" style="font-size:12px">' + esc(i.f.no || '—') + (i.source === 'sample' ? ' <span class="chip sample">示例</span>' : '') + '</td>' +
         '<td class="mono nowrap" style="font-size:12px">' + esc(i.f.date || '—') + '</td>' +
+        '<td class="nowrap"' + (i.sender ? ' title="' + esc(i.sender) + '"' : '') + '>' + (i.sender ? esc(senderLabel(i)) : '<span class="muted">—</span>') + '</td>' +
         '<td>' + esc(i.f.seller || '—') + '</td>' +
         '<td class="muted nowrap">' + esc(i.status === 'ready' ? i.f.cat : '—') + '</td>' +
         '<td class="num mono">' + fmt(num(i.f.total)) + '</td>' +
@@ -663,7 +676,7 @@ function viewReview(id){
   h += '<div class="cols"><section class="rv-left" aria-label="发票原件">';
   if (inv.img) h += '<div class="card pad"><img class="orig" src="' + inv.img + '" alt="发票原件：' + esc(inv.file) + '"></div>';
   h += '<div class="card pad stack"><div class="sub">' + (inv.img ? '按识别结果还原，黄色是触发规则的字段' : '票面信息（黄色是触发规则的字段）') + '</div><div class="paper-wrap" id="rv-paper">' + paper(inv, au) + '</div></div>';
-  h += '<p class="note">' + (inv.source === 'sample' ? '这是示例数据。' : inv.source === 'manual' ? '手动录入。' : '来源文件：' + esc(inv.file) + '。') + (inv.method && METHOD[inv.method] ? ' 识别方式：' + METHOD[inv.method] + '。' : '') + (inv.conf != null ? ' 置信度 ' + Math.round(inv.conf*100) + '%。' : '') + (inv.qr ? ' 二维码：已读取' + (inv.qr.mismatch && inv.qr.mismatch.length ? '，' + esc(inv.qr.mismatch.join('、')) + '已按二维码修正' : '，号码和日期一致') + '。' : '') + (inv.aiNotes ? ' 识别备注：' + esc(inv.aiNotes) : '') + '</p></section>';
+  h += '<p class="note">' + (inv.source === 'sample' ? '这是示例数据。' : inv.source === 'manual' ? '手动录入。' : '来源文件：' + esc(inv.file) + '。') + (inv.sender ? ' 来自邮件：' + esc(inv.senderName ? inv.senderName + ' <' + inv.sender + '>' : inv.sender) + (inv.mail && inv.mail.subject ? '「' + esc(inv.mail.subject) + '」' : '') + (inv.mail && inv.mail.date ? ' ' + esc(fmtDateTime(inv.mail.date)) : '') + '。' : '') + (inv.method && METHOD[inv.method] ? ' 识别方式：' + METHOD[inv.method] + '。' : '') + (inv.conf != null ? ' 置信度 ' + Math.round(inv.conf*100) + '%。' : '') + (inv.qr ? ' 二维码：已读取' + (inv.qr.mismatch && inv.qr.mismatch.length ? '，' + esc(inv.qr.mismatch.join('、')) + '已按二维码修正' : '，号码和日期一致') + '。' : '') + (inv.aiNotes ? ' 识别备注：' + esc(inv.aiNotes) : '') + '</p></section>';
 
   h += '<div class="rv-right">';
   if (inv.status === 'error') h += '<div class="errbox" role="alert">' + esc(inv.err) + '</div>';
@@ -784,11 +797,162 @@ function saveAIForm(f){
   });
 }
 
+/* ---------- 邮箱收票 ---------- */
+var mailInfo = null;
+var mailUi = {editing:false, draft:null, passDraft:'', status:null, testing:false, senders:'', days:'30', scanning:false, progress:'', result:null, sel:{}, error:'', importing:false};
+function loadMailInfo(){ return window.api.mailGet().then(function(r){ if (r && r.ok) mailInfo = r.data; }); }
+function mailReady(){ return mailInfo && mailInfo.user && mailInfo.hasPass; }
+function parseSenders(s){
+  var out = [];
+  String(s || '').split(/[\s,，;；、]+/).forEach(function(x){ x = x.trim().toLowerCase(); if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x) && out.indexOf(x) < 0) out.push(x); });
+  return out;
+}
+function fmtSize(n){ return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB'; }
+function fmtDateTime(iso){ if (!iso) return ''; var d = new Date(iso); if (isNaN(d)) return ''; return d.getFullYear() + '-' + ('0'+(d.getMonth()+1)).slice(-2) + '-' + ('0'+d.getDate()).slice(-2) + ' ' + ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2); }
+var MAIL_HELP = {
+  qq: '<ol><li>在电脑上登录 QQ 邮箱网页版 <a href="https://mail.qq.com" target="_blank" rel="noopener">mail.qq.com</a>，点右上角「设置」→「账号与安全」（旧版是「设置 → 账户」）</li><li>找到「POP3/IMAP/SMTP/Exchange/CardDAV 服务」，开启「IMAP/SMTP 服务」</li><li>按提示用手机发短信验证，页面会显示一串 16 位的「授权码」，复制粘贴到左边</li></ol><p class="note">授权码只显示一次，可以随时重新生成。修改 QQ 密码后，旧的授权码可能失效，需要重新生成。</p>',
+  exmail: '<ol><li>登录腾讯企业邮网页版，进入「设置 → 收发信设置」，开启 IMAP/SMTP 服务</li><li>如果开启了微信动态密码或安全登录，在「设置 → 微信绑定 → 客户端专用密码」里生成一个专用密码，填到左边</li><li>没开启安全登录的，直接填邮箱密码</li></ol>',
+  '163': '<ol><li>登录 163 邮箱网页版，点「设置 → POP3/SMTP/IMAP」</li><li>开启「IMAP/SMTP 服务」，按提示发短信验证</li><li>复制生成的「授权密码」填到左边</li></ol>',
+  '126': '<ol><li>登录 126 邮箱网页版，点「设置 → POP3/SMTP/IMAP」</li><li>开启「IMAP/SMTP 服务」，按提示发短信验证</li><li>复制生成的「授权密码」填到左边</li></ol>',
+  qiye163: '<ol><li>登录网易企业邮，「设置 → 客户端设置」开启 IMAP</li><li>如果开启了客户端授权密码，生成一个填到左边；否则填邮箱密码</li></ol>',
+  aliyun: '<ol><li>登录阿里企业邮箱网页版，「设置 → 账户与安全 → 三方客户端安全密码」生成一个密码</li><li>把这个密码填到左边</li></ol>',
+  custom: '<p class="help">填写邮箱服务商提供的 IMAP 服务器地址和端口（一般是 993，使用 SSL）。密码一般要填邮箱设置里生成的客户端授权码。</p>'
+};
+function viewMail(){
+  var info = mailInfo || {preset:'qq', presets:{}, user:'', hasPass:false};
+  var h = '<div class="rl-head"><div class="stack" style="gap:4px"><h1>邮箱收票</h1><span class="muted" style="font-size:13px">输入发件人邮箱，只收这些人发来的发票邮件。软件只读取邮件，不会标记已读、删除或移动邮件。</span></div></div>';
+  if (!mailReady() || mailUi.editing){
+    var d = mailUi.draft || {preset:info.preset, user:info.user, host:info.host, port:info.port, secure:info.secure};
+    var P = info.presets || {};
+    h += '<div class="cols"><section class="card pad stack" style="flex:999 1 520px;min-width:0"><h2 class="h">连接收票邮箱</h2><div class="fgrid">' +
+      '<label class="fld wide" for="mail-preset">邮箱类型<select id="mail-preset">' + Object.keys(P).map(function(k){ return '<option value="' + k + '"' + (k === d.preset ? ' selected' : '') + '>' + esc(P[k].name) + '</option>'; }).join('') + '</select></label>' +
+      '<label class="fld wide" for="mail-user">邮箱地址<input id="mail-user" class="mono" autocomplete="off" value="' + esc(d.user || '') + '" placeholder="例如 fapiao@qq.com"></label>' +
+      '<label class="fld wide" for="mail-pass">授权码<input id="mail-pass" type="password" class="mono" autocomplete="off" value="' + esc(mailUi.passDraft) + '" placeholder="' + (info.hasPass ? '已保存，不修改就留空' : '粘贴邮箱设置里生成的授权码（不是登录密码）') + '"></label>' +
+      (d.preset === 'custom' ? '<label class="fld" for="mail-host">IMAP 服务器<input id="mail-host" class="mono" value="' + esc(d.host || '') + '" placeholder="imap.example.com"></label>' +
+        '<label class="fld" for="mail-port">端口<input id="mail-port" class="mono" inputmode="numeric" value="' + esc(d.port || 993) + '"></label>' +
+        '<label class="fld wide" for="mail-secure" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="mail-secure"' + (d.secure !== false ? ' checked' : '') + ' style="width:18px;height:18px;accent-color:var(--accent)">使用 SSL 加密连接（一般都要勾选）</label>' : '') +
+      '</div><div class="actions"><button class="btn lg primary" type="button" data-act="mail-test"' + (mailUi.testing ? ' disabled' : '') + '>' + (mailUi.testing ? '<span class="spin"></span>正在连接…' : '保存并测试连接') + '</button>' +
+      (mailReady() ? '<button class="btn lg" type="button" data-act="mail-cancel">取消</button>' : '') + '</div>';
+    if (mailUi.status) h += '<div class="' + (mailUi.status.ok ? 'status-ok' : 'status-bad') + '" role="status">' + esc(mailUi.status.msg) + '</div>';
+    h += '<p class="note">授权码用 Windows 系统加密保存在这台电脑上，只用来读取邮件。</p></section>' +
+      '<aside class="col-side"><section class="card pad stack"><h2 class="h">怎么获取授权码</h2><div class="help">' + (MAIL_HELP[d.preset] || '') + '</div></section></aside></div>';
+    return h;
+  }
+  var pname = ((info.presets || {})[info.preset] || {}).name || '';
+  h += '<div class="card pad" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><span>收票邮箱：<b class="mono">' + esc(info.user) + '</b></span><span class="muted">' + esc(pname) + '</span><button class="linkbtn grow" type="button" data-act="mail-edit">修改设置</button></div>';
+  var recent = (cfg.recentSenders || []).slice(0, 12);
+  h += '<section class="card pad stack" aria-label="检查邮件"><div class="fgrid">' +
+    '<label class="fld wide" for="mail-senders">发件人邮箱<input id="mail-senders" class="mono" autocomplete="off" value="' + esc(mailUi.senders) + '" placeholder="例如 zhangsan@company.com，可以填几个，用逗号隔开"></label>' +
+    (recent.length ? '<div class="wide" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"><span class="sub">最近用过：</span>' + recent.map(function(s){ return '<button type="button" class="pill" data-sender="' + esc(s) + '">' + esc(s) + '</button>'; }).join('') + '</div>' : '') +
+    '<label class="fld" for="mail-days">时间范围<select id="mail-days">' + [['7','最近 7 天'],['30','最近 30 天'],['90','最近 3 个月'],['180','最近半年'],['365','最近一年']].map(function(o){ return '<option value="' + o[0] + '"' + (mailUi.days === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></label>' +
+    '</div><div class="actions"><button class="btn lg primary" type="button" data-act="mail-scan"' + (mailUi.scanning ? ' disabled' : '') + '>' + (mailUi.scanning ? '<span class="spin"></span>正在检查…' : '检查邮件') + '</button>' +
+    '<span class="muted" id="mail-progress" style="font-size:13px">' + esc(mailUi.scanning ? mailUi.progress : '') + '</span></div>' +
+    (mailUi.error ? '<div class="errbox" role="alert">' + esc(mailUi.error) + '</div>' : '') +
+    '<p class="note">只搜索收件箱。收取的内容：附件里的 PDF、OFD、XML、压缩包和发票图片，转发的邮件也可以；正文里只有下载链接的，能直接下载的会自动下载。</p></section>';
+
+  var R = mailUi.result;
+  if (R){
+    var nFiles = 0, nSeen = 0, nSel = 0;
+    R.messages.forEach(function(m){ m.files.forEach(function(f){ nFiles++; if (f.seen) nSeen++; if (mailUi.sel[f.id]) nSel++; }); });
+    h += '<section class="card" aria-label="邮件清单"><div class="filters" style="justify-content:space-between"><div><b>' + esc(R.senders.join('、')) + '</b> <span class="muted">最近 ' + R.days + ' 天：' + R.messages.length + ' 封邮件，' + nFiles + ' 个发票文件' + (nSeen ? '（' + nSeen + ' 个已导入过）' : '') + '</span></div>' +
+      (nFiles ? '<div class="actions"><button class="linkbtn" type="button" data-act="mail-all">全选</button><button class="linkbtn muted" type="button" data-act="mail-none">全不选</button></div>' : '') + '</div>';
+    if (!R.messages.length) h += '<div class="empty">没有找到这些发件人在最近 ' + R.days + ' 天发来的邮件。可以换个时间范围，或者确认发件人邮箱有没有写错。</div>';
+    R.messages.forEach(function(m){
+      h += '<div class="mailmsg"><div class="mailhead"><span><b>' + esc(m.fromName || m.from) + '</b>' + (m.fromName ? ' <span class="muted mono" style="font-size:12px">' + esc(m.from) + '</span>' : '') + '</span><span class="muted mono" style="font-size:12px">' + esc(fmtDateTime(m.date)) + '</span></div>' +
+        '<div class="mailsubj">' + esc(m.subject) + '</div>';
+      if (!m.files.length && !m.links.length) h += '<div class="muted" style="font-size:12px">这封邮件里没有发票文件</div>';
+      m.files.forEach(function(f){
+        h += '<label class="mailfile" for="mf-' + esc(f.id) + '"><input type="checkbox" class="mail-file" id="mf-' + esc(f.id) + '" data-fid="' + esc(f.id) + '"' + (mailUi.sel[f.id] ? ' checked' : '') + '><span class="mono" style="min-width:0;overflow-wrap:anywhere">' + esc(f.name) + '</span><span class="muted" style="font-size:12px">' + fmtSize(f.size) + '</span>' + (f.seen ? '<span class="chip idle">已导入过</span>' : '') + '</label>';
+      });
+      m.links.forEach(function(u){
+        h += '<div class="mailfile"><span class="chip review">只有下载链接</span><span class="muted" style="font-size:12px;min-width:0;overflow-wrap:anywhere">软件没能直接下载，请打开链接下载后再上传</span><button class="linkbtn" type="button" data-act="mail-link" data-url="' + esc(u) + '">打开链接</button></div>';
+      });
+      h += '</div>';
+    });
+    if (nFiles) h += '<div class="tbl-foot" style="align-items:center"><span>同一张发票导入两次会被「重复报销」规则拦下</span><button class="btn lg primary" type="button" data-act="mail-import"' + (!nSel || mailUi.importing ? ' disabled' : '') + '>导入选中的 ' + nSel + ' 个文件</button></div>';
+    h += '</section>';
+  }
+  return h;
+}
+function mailForm(){
+  var g = function(id){ var e = $('#' + id); return e ? e : null; };
+  return {preset: g('mail-preset').value, user: g('mail-user').value.trim(), pass: g('mail-pass').value,
+    host: g('mail-host') ? g('mail-host').value.trim() : '', port: g('mail-port') ? g('mail-port').value.trim() : 993, secure: g('mail-secure') ? g('mail-secure').checked : true};
+}
+function mailAction(act, t){
+  if (act === 'mail-edit'){ mailUi.editing = true; mailUi.draft = null; mailUi.status = null; render(); return true; }
+  if (act === 'mail-cancel'){ mailUi.editing = false; mailUi.draft = null; mailUi.passDraft = ''; mailUi.status = null; render(); return true; }
+  if (act === 'mail-test'){
+    var f = mailForm();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(f.user)){ mailUi.status = {ok:false, msg:'请填写正确的邮箱地址'}; render(); return true; }
+    if (!f.pass && !(mailInfo && mailInfo.hasPass)){ mailUi.status = {ok:false, msg:'请粘贴授权码'}; render(); return true; }
+    mailUi.testing = true; mailUi.status = null; mailUi.draft = {preset:f.preset, user:f.user, host:f.host, port:f.port, secure:f.secure}; mailUi.passDraft = ''; render();
+    window.api.mailSave(f).then(function(r){
+      if (!r || !r.ok) throw {message:(r && r.message) || '保存失败'};
+      mailInfo = r.data;
+      return window.api.mailTest();
+    }).then(function(r){
+      if (r && r.ok){ mailUi.status = null; mailUi.editing = false; mailUi.draft = null; toast('连接成功，收件箱里有 ' + r.data.messages + ' 封邮件'); }
+      else mailUi.status = {ok:false, msg:'连接失败：' + ((r && r.message) || '未知错误')};
+    }, function(e){ mailUi.status = {ok:false, msg:e.message}; }).then(function(){ mailUi.testing = false; render(); });
+    return true;
+  }
+  if (act === 'mail-scan'){
+    var input = $('#mail-senders'); if (input) mailUi.senders = input.value;
+    var senders = parseSenders(mailUi.senders);
+    if (!senders.length){ mailUi.error = '请填写发件人邮箱，例如 zhangsan@company.com'; render(); return true; }
+    mailUi.days = ($('#mail-days') || {}).value || mailUi.days;
+    mailUi.scanning = true; mailUi.error = ''; mailUi.progress = '正在连接邮箱'; mailUi.result = null; mailUi.sel = {}; render();
+    window.api.mailScan({senders:senders, days:Number(mailUi.days)}).then(function(r){
+      if (!r || !r.ok){ mailUi.error = (r && r.message) || '检查邮件失败'; return; }
+      mailUi.result = r.data;
+      r.data.messages.forEach(function(m){ m.files.forEach(function(f){ if (!f.seen) mailUi.sel[f.id] = true; }); });
+      cfg.recentSenders = senders.concat((cfg.recentSenders || []).filter(function(s){ return senders.indexOf(s) < 0; })).slice(0, 12);
+      save();
+    }).then(function(){ mailUi.scanning = false; render(); });
+    return true;
+  }
+  if (act === 'mail-all' || act === 'mail-none'){
+    (mailUi.result ? mailUi.result.messages : []).forEach(function(m){ m.files.forEach(function(f){ if (act === 'mail-all') mailUi.sel[f.id] = true; else delete mailUi.sel[f.id]; }); });
+    render(); return true;
+  }
+  if (act === 'mail-link'){ window.api.mailOpenLink(t.getAttribute('data-url')); return true; }
+  if (act === 'mail-import'){
+    var ids = Object.keys(mailUi.sel).filter(function(k){ return mailUi.sel[k]; });
+    if (!ids.length) return true;
+    mailUi.importing = true; render();
+    window.api.mailImport(mailUi.result.scanId, ids).then(function(r){
+      mailUi.importing = false;
+      if (!r || !r.ok){ mailUi.error = (r && r.message) || '导入失败'; render(); return; }
+      var files = [], metas = [];
+      r.data.forEach(function(x){
+        var ext = (x.name.match(/\.(\w+)$/) || [])[1] || '';
+        var type = {pdf:'application/pdf', xml:'text/xml', jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', webp:'image/webp'}[ext.toLowerCase()] || '';
+        files.push(new File([x.data], x.name, {type:type}));
+        metas.push({sender:x.from, senderName:x.fromName, mail:{subject:x.subject, date:x.date}});
+      });
+      mailUi.result.messages.forEach(function(m){ m.files.forEach(function(f){ if (mailUi.sel[f.id]){ f.seen = true; delete mailUi.sel[f.id]; } }); });
+      toast('已导入 ' + files.length + ' 个文件，正在识别');
+      enqueue(files, metas);
+    });
+    return true;
+  }
+  return false;
+}
+if (window.api.onMailProgress) window.api.onMailProgress(function(t){ mailUi.progress = t; var el = $('#mail-progress'); if (el && mailUi.scanning) el.textContent = t; });
+function senderLabel(i){ return i.sender ? (i.senderName || i.sender.split('@')[0]) : ''; }
+
 /* ---------- 事件 ---------- */
 function findInv(id){ return invoices.filter(function(i){ return i.id === id; })[0]; }
 document.addEventListener('click', function(e){
-  var t = e.target.closest('[data-act],[data-filter],[data-dec],[data-open],[data-rate]');
+  var t = e.target.closest('[data-act],[data-filter],[data-dec],[data-open],[data-rate],[data-sender]');
   if (!t) return;
+  if (t.hasAttribute('data-sender')){
+    var inp = $('#mail-senders'), list = parseSenders(inp ? inp.value : mailUi.senders), sv = t.getAttribute('data-sender');
+    if (list.indexOf(sv) < 0) list.push(sv);
+    mailUi.senders = list.join(', '); if (inp){ inp.value = mailUi.senders; inp.focus(); }
+    return;
+  }
   if (t.hasAttribute('data-open')){ if (e.target.closest('a,button')) return; location.hash = 'review-' + t.getAttribute('data-open'); return; }
   if (t.hasAttribute('data-filter')){ ui.filter = t.getAttribute('data-filter'); render(); return; }
   if (t.hasAttribute('data-rate')){ var r = Number(t.getAttribute('data-rate')), i = cfg.rates.indexOf(r); if (i >= 0) cfg.rates.splice(i,1); else cfg.rates.push(r); cfg.rates.sort(function(a,b){ return a-b; }); save(); render(); return; }
@@ -806,6 +970,7 @@ document.addEventListener('click', function(e){
   }
   var act = t.getAttribute('data-act');
   if (act === 'pick') $('#fileInput').click();
+  else if (/^mail-/.test(act)) mailAction(act, t);
   else if (act === 'open-dir') window.api.openDataDir();
   else if (act === 'upd-install'){ window.api.installUpdate(); toast('正在重启并更新…'); }
   else if (act === 'upd-open'){ if (upd && upd.url) window.api.openUpdate(upd.url); }
@@ -839,6 +1004,7 @@ document.addEventListener('keydown', function(e){
   if (tr && (e.key === 'Enter' || e.key === ' ')){ e.preventDefault(); location.hash = 'review-' + tr.getAttribute('data-open'); }
 });
 document.addEventListener('input', function(e){
+  if (e.target.id === 'mail-senders'){ mailUi.senders = e.target.value; return; }
   if (e.target.id === 'q'){ ui.q = e.target.value; var pos = e.target.selectionStart; render(); var q = $('#q'); if (q){ q.focus(); try{ q.setSelectionRange(pos,pos); }catch(_){} } }
 });
 document.addEventListener('change', function(e){
@@ -856,6 +1022,10 @@ document.addEventListener('change', function(e){
     save(); refreshReview(inv);
     return;
   }
+  if (t.id === 'sender-filter'){ ui.sender = t.value; render(); return; }
+  if (t.id === 'mail-preset'){ var mf = mailForm(); mailUi.draft = {preset:mf.preset, user:mf.user, host:mf.host, port:mf.port, secure:mf.secure}; mailUi.passDraft = mf.pass; render(); return; }
+  if (t.classList && t.classList.contains('mail-file')){ var fid = t.getAttribute('data-fid'); if (t.checked) mailUi.sel[fid] = true; else delete mailUi.sel[fid]; render(); return; }
+  if (t.id === 'mail-days'){ mailUi.days = t.value; return; }
   if (t.id === 'ai-provider'){
     var P = (aiInfo && aiInfo.providers) || {}, v = t.value;
     ui.aiKeyDraft = $('#ai-key').value; aiTest = null;
@@ -885,13 +1055,14 @@ function csvCell(v){ var s = String(v == null ? '' : v); return /[",\n]/.test(s)
 function longNum(v){ return v ? '="' + v + '"' : ''; }
 function buildCsv(){
   var A = auditAll();
-  var head = ['审核结果','处理结果','发票类型','发票代码','发票号码','开票日期','购买方','购买方税号','销售方','销售方税号','金额','税额','价税合计','税率','费用类别','项目','审核发现','复核意见','来源文件','录入方式'];
+  var head = ['审核结果','处理结果','发票类型','发票代码','发票号码','开票日期','购买方','购买方税号','销售方','销售方税号','金额','税额','价税合计','税率','费用类别','项目','审核发现','复核意见','来源文件','录入方式','提交人','提交人邮箱','邮件主题','邮件时间'];
   var rows = sortedList(A).filter(function(i){ return i.status === 'ready'; }).map(function(i){
     var au = A[i.id], f = i.f;
     return [LV[au.level].t, i.decision ? DEC[i.decision] : (au.level === 'pass' ? '自动通过' : '待处理'), f.type, longNum(f.code), longNum(f.no), f.date, f.buyer, f.buyerTax, f.seller, f.sellerTax,
       num(f.amount), num(f.tax), num(f.total), f.rate == null ? '' : f.rate + '%', f.cat, f.items,
       au.checks.filter(function(c){ return c.k === 'fail' || c.k === 'warn'; }).map(function(c){ return c.title + '：' + c.detail; }).join('；'),
-      i.memo, i.file, (i.source === 'sample' ? '示例' : i.source === 'manual' ? '手动录入' : METHOD[i.method] || (i.source === 'ai' ? 'AI 识别' : ''))];
+      i.memo, i.file, (i.source === 'sample' ? '示例' : i.source === 'manual' ? '手动录入' : METHOD[i.method] || (i.source === 'ai' ? 'AI 识别' : '')),
+      i.sender ? senderLabel(i) : '', i.sender || '', i.mail ? i.mail.subject : '', i.mail ? fmtDateTime(i.mail.date) : ''];
   });
   return '﻿' + [head].concat(rows).map(function(r){ return r.map(function(c, idx){ return (idx === 3 || idx === 4) ? c : csvCell(c); }).join(','); }).join('\r\n');
 }
@@ -926,7 +1097,8 @@ Promise.all([
   window.api.loadData().then(function(r){ return r && r.ok ? applyLoaded(r.data) : false; }),
   window.api.info().then(function(r){ if (r && r.ok) dataDir = r.data.dataDir; }),
   window.api.getUpdate().then(function(r){ if (r && r.ok){ appVer = r.data.version; isPortable = r.data.portable; if (r.data.update){ upd = r.data.update; renderUpdate(); } } }),
-  initAI()
+  initAI(),
+  loadMailInfo()
 ]).then(function(res){
   if (!res[0]){ invoices = makeSamples(); save(); }
   render();

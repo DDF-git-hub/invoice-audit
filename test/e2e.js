@@ -85,6 +85,87 @@ fs.mkdirSync(out, { recursive: true });
   await page.waitForTimeout(400);
   await page.screenshot({ path: path.join(out, '05-AI设置.png'), fullPage: true });
 
+  // ---------- 邮箱收票（云端有测试邮箱时运行） ----------
+  if (process.env.MAIL_TEST) {
+    console.log('\n[邮箱收票]');
+    const { seed, TO, ZHANG } = require('./mail-seed.js');
+    const s = await seed(Number(process.env.MAIL_SMTP_PORT || 3025));
+    const check = (ok, msg) => { console.log((ok ? '  ✓ ' : '  ✗ ') + msg); if (!ok) mustFail++; };
+    const waitIdle = async (sel, ms) => {
+      const t1 = Date.now();
+      for (;;) {
+        if (await page.evaluate((q) => !!document.querySelector(q), sel)) return true;
+        if (Date.now() - t1 > ms) return false;
+        await page.waitForTimeout(500);
+      }
+    };
+    await page.evaluate(() => { location.hash = 'mail'; });
+    await page.waitForSelector('#mail-preset');
+    await page.selectOption('#mail-preset', 'custom');
+    await page.fill('#mail-user', TO);
+    await page.fill('#mail-pass', 'test-password');
+    await page.fill('#mail-host', '127.0.0.1');
+    await page.fill('#mail-port', String(process.env.MAIL_IMAP_PORT || 3143));
+    await page.uncheck('#mail-secure');
+    await page.screenshot({ path: path.join(out, '06-邮箱设置.png'), fullPage: true });
+    await page.click('[data-act="mail-test"]');
+    const connected = await waitIdle('[data-act="mail-edit"], .status-bad', 30000);
+    const bad = await page.evaluate(() => { const b = document.querySelector('.status-bad'); return b ? b.textContent : ''; });
+    check(connected && !bad, '连接测试邮箱' + (bad ? '：' + bad : ''));
+    if (connected && !bad) {
+      await page.fill('#mail-senders', ZHANG.address);
+      await page.selectOption('#mail-days', '30');
+      await page.click('[data-act="mail-scan"]');
+      await page.waitForTimeout(500);
+      await waitIdle('[data-act="mail-scan"]:not([disabled])', 120000);
+      const r = await page.evaluate(() => ({
+        msgs: document.querySelectorAll('.mailmsg').length,
+        files: document.querySelectorAll('.mail-file').length,
+        checked: document.querySelectorAll('.mail-file:checked').length,
+        links: document.querySelectorAll('[data-act="mail-link"]').length,
+        text: document.querySelector('#view').innerText,
+        err: (document.querySelector('.errbox') || {}).textContent || ''
+      }));
+      await page.screenshot({ path: path.join(out, '07-邮件清单.png'), fullPage: true });
+      check(!r.err, '检查邮件没有报错' + (r.err ? '：' + r.err : ''));
+      check(r.msgs === s.expect.messages, '只列出张三的邮件：' + r.msgs + ' 封（应为 ' + s.expect.messages + '）');
+      check(r.files === s.expect.files && r.checked === s.expect.files, '发票文件 ' + r.files + ' 个、默认勾选 ' + r.checked + ' 个（应为 ' + s.expect.files + '）');
+      check(r.links === s.expect.deadLinks, '下载不了的链接单独列出：' + r.links + ' 个');
+      check(!/lisi@|xzhangsan@|不应该被收进来/.test(r.text), '没有收进其他发件人的邮件');
+      check(/发票\.pdf/.test(r.text), '压缩包里的 GBK 中文文件名正确：发票.pdf');
+      await page.click('[data-act="mail-import"]');
+      await page.waitForTimeout(1000);
+      const t2 = Date.now();
+      for (;;) {
+        const done = await page.evaluate(() => !document.querySelector('.progress') && !document.querySelector('.chip.idle'));
+        if (done || Date.now() - t2 > 5 * 60 * 1000) break;
+        await page.waitForTimeout(1000);
+      }
+      await page.waitForTimeout(1500);
+      const led = JSON.parse(fs.readFileSync(path.join(ud, 'ledger.json'), 'utf8'));
+      const mine = led.invoices.filter((i) => i.sender === ZHANG.address);
+      check(mine.length === s.expect.files, '台账里张三提交的发票：' + mine.length + ' 张');
+      check(mine.every((i) => i.senderName === ZHANG.name && i.mail && i.mail.subject), '每张都记下了提交人和邮件主题');
+      const nos = mine.map((i) => i.f.no).sort();
+      check(JSON.stringify(nos) === JSON.stringify(s.expect.nos.slice().sort()), '识别出的发票号码：' + nos.join('、'));
+      await page.selectOption('#sender-filter', ZHANG.address).catch(() => {});
+      await page.waitForTimeout(400);
+      await page.screenshot({ path: path.join(out, '08-按提交人筛选.png'), fullPage: true });
+      const rows = await page.evaluate(() => document.querySelectorAll('tr[data-open]').length);
+      check(rows === s.expect.files, '按提交人筛选后显示 ' + rows + ' 行');
+      // 再检查一次：已经导入过的不再默认勾选
+      await page.evaluate(() => { location.hash = 'mail'; });
+      await page.waitForSelector('[data-act="mail-scan"]');
+      await page.click('[data-act="mail-scan"]');
+      await page.waitForTimeout(500);
+      await waitIdle('[data-act="mail-scan"]:not([disabled])', 120000);
+      const r2 = await page.evaluate(() => ({ checked: document.querySelectorAll('.mail-file:checked').length, seen: (document.querySelector('#view').innerText.match(/已导入过/g) || []).length }));
+      check(r2.checked === 0 && r2.seen >= s.expect.files, '再次检查时已导入的发票标为「已导入过」且不勾选（已导入过 ' + r2.seen + '，勾选 ' + r2.checked + '）');
+      await page.screenshot({ path: path.join(out, '09-再次检查.png'), fullPage: true });
+    }
+    s.srv.close();
+  }
+
   fs.writeFileSync(path.join(out, 'e2e-report.json'), JSON.stringify(report, null, 2));
   await app.close();
   if (errors.length) { console.log('页面有 ' + errors.length + ' 个脚本错误'); mustFail++; }

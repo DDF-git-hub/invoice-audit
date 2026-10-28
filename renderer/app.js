@@ -1322,12 +1322,12 @@ function lineRow(v, l, i, editable){
   }
   var k = ' data-v="' + v.key + '" data-i="' + i + '"';
   return '<tr class="vline">' +
-    '<td><select class="inp vl" data-f="dc"' + k + ' aria-label="借贷" style="width:56px"><option value="D"' + (l.dc === 'D' ? ' selected' : '') + '>借</option><option value="C"' + (l.dc === 'C' ? ' selected' : '') + '>贷</option></select></td>' +
-    '<td style="min-width:220px"><input class="inp mono vl" data-f="code"' + k + ' list="acct-list" value="' + esc(l.code) + '" aria-label="科目编码"><div class="sub" style="margin-top:2px">' + (a ? esc(fullName(l.code)) : '<span style="color:var(--block)">请选择科目</span>') + '</div></td>' +
-    '<td style="min-width:220px"><input class="inp vl" data-f="summary"' + k + ' value="' + esc(l.summary) + '" aria-label="摘要"></td>' +
-    '<td><input class="inp vl" data-f="dept"' + k + ' list="dept-list" value="' + esc(l.dept || '') + '" aria-label="部门" style="width:96px"' + (a && a.aux === 'dept' ? '' : ' placeholder="—"') + '></td>' +
-    '<td><select class="inp vl" data-f="person"' + k + ' aria-label="个人" style="width:96px"><option value="">—</option>' + E.map(function(e){ return '<option value="' + e.id + '"' + (l.person === e.id ? ' selected' : '') + '>' + esc(e.name) + '</option>'; }).join('') + '</select></td>' +
-    '<td><input class="inp mono vl" data-f="amount"' + k + ' inputmode="decimal" value="' + (num(l.amount) == null ? '' : num(l.amount).toFixed(2)) + '" aria-label="金额" style="width:110px;text-align:right"></td>' +
+    '<td><select class="inp vl" data-vf="dc"' + k + ' aria-label="借贷" style="width:56px"><option value="D"' + (l.dc === 'D' ? ' selected' : '') + '>借</option><option value="C"' + (l.dc === 'C' ? ' selected' : '') + '>贷</option></select></td>' +
+    '<td style="min-width:220px"><input class="inp mono vl" data-vf="code"' + k + ' list="acct-list" value="' + esc(l.code) + '" aria-label="科目编码"><div class="sub" style="margin-top:2px">' + (a ? esc(fullName(l.code)) : '<span style="color:var(--block)">请选择科目</span>') + '</div></td>' +
+    '<td style="min-width:220px"><input class="inp vl" data-vf="summary"' + k + ' value="' + esc(l.summary) + '" aria-label="摘要"></td>' +
+    '<td><input class="inp vl" data-vf="dept"' + k + ' list="dept-list" value="' + esc(l.dept || '') + '" aria-label="部门" style="width:96px"' + (a && a.aux === 'dept' ? '' : ' placeholder="—"') + '></td>' +
+    '<td><select class="inp vl" data-vf="person"' + k + ' aria-label="个人" style="width:96px"><option value="">—</option>' + E.map(function(e){ return '<option value="' + e.id + '"' + (l.person === e.id ? ' selected' : '') + '>' + esc(e.name) + '</option>'; }).join('') + '</select></td>' +
+    '<td><input class="inp mono vl" data-vf="amount"' + k + ' inputmode="decimal" value="' + (num(l.amount) == null ? '' : num(l.amount).toFixed(2)) + '" aria-label="金额" style="width:110px;text-align:right"></td>' +
     '<td class="muted" style="font-size:12px;min-width:120px">' + esc(l.rule || '手动添加') + '</td>' +
     '<td><button class="linkbtn muted" type="button" data-act="vl-del"' + k + ' aria-label="删除这一行">删除</button></td></tr>';
 }
@@ -1583,7 +1583,7 @@ function voucherAction(act, t){
 }
 function voucherChange(t){
   if (t.classList.contains('vl')){
-    var v = findDraft(t.getAttribute('data-v')), i = Number(t.getAttribute('data-i')), f = t.getAttribute('data-f');
+    var v = findDraft(t.getAttribute('data-v')), i = Number(t.getAttribute('data-i')), f = t.getAttribute('data-vf');
     if (!v || !v.lines[i]) return true;
     storeDraft(v);
     var old = v.lines[i][f], val = t.value;

@@ -299,14 +299,14 @@ fs.mkdirSync(out, { recursive: true });
       await page.waitForSelector('section[aria-label="凭证 张三"]');
       const card = 'section[aria-label="凭证 张三"]';
       const lines = await page.evaluate((c) => Array.from(document.querySelectorAll(c + ' tr.vline')).map((tr) => ({
-        dc: tr.querySelector('[data-f="dc"]').value, code: tr.querySelector('[data-f="code"]').value, amount: tr.querySelector('[data-f="amount"]').value, dept: tr.querySelector('[data-f="dept"]').value })), card);
+        dc: tr.querySelector('[data-vf="dc"]').value, code: tr.querySelector('[data-vf="code"]').value, amount: tr.querySelector('[data-vf="amount"]').value, dept: tr.querySelector('[data-vf="dept"]').value })), card);
       console.log('    ' + lines.map((l) => (l.dc === 'D' ? '借 ' : '贷 ') + l.code + ' ' + l.amount + (l.dept ? ' [' + l.dept + ']' : '')).join(' | '));
       const want = [['D', '660104', '1860.00'], ['D', '660201', '1592.92'], ['D', '22210101', '207.08'], ['C', '224101', '3660.00']];
       chk(lines.length === 4 && want.every((w) => lines.some((l) => l.dc === w[0] && l.code === w[1] && l.amount === w[2])), '张三两张发票合成一张凭证 4 行：招待费（市场部规则）、办公费、进项税、应付员工');
       chk(await page.evaluate((c) => /借贷平衡/.test(document.querySelector(c).innerText), card), '借贷平衡、辅助核算齐全');
       await page.screenshot({ path: path.join(out, '13-凭证待确认.png'), fullPage: true });
       // 改科目 → 确认时存成规则
-      const codeInput = page.locator(card + ' tr.vline [data-f="code"]').first();
+      const codeInput = page.locator(card + ' tr.vline [data-vf="code"]').first();
       await codeInput.fill('660299');
       await codeInput.dispatchEvent('change');
       await page.waitForTimeout(300);

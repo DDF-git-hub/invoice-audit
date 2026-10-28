@@ -126,22 +126,30 @@ function audit(inv, all){
   var miss = need.filter(function(p){ return f[p[0]] === '' || f[p[0]] == null; });
   if (miss.length) add('unclear', true, '关键字段缺失', '缺少：' + miss.map(function(p){ return p[1]; }).join('、') + '，请对照原件补录', miss.map(function(p){ return p[0]; }));
   else add('unclear', false, '票面信息完整', '发票号码、日期、金额、购销双方齐全');
-  if (inv.conf != null && inv.conf < 0.8) add('unclear', true, '识别置信度低', 'AI 置信度 ' + Math.round(inv.conf*100) + '%，建议对照原件核对' + (inv.aiNotes ? '。' + inv.aiNotes : ''), []);
+  var isOcr = inv.method === 'ocr';
+  if (inv.conf != null && inv.conf < 0.8) add('unclear', true, '识别置信度低', (METHOD[inv.method] || '识别') + '置信度 ' + Math.round(inv.conf*100) + '%，建议对照原件核对' + (inv.aiNotes ? '。' + inv.aiNotes : ''), []);
+  // 文字识别（OCR）可能认错一两个字：这类差异转人工复核，不直接拦截
+  var ocrHint = '，也可能是文字识别误差，请对照原件';
 
   if (f.buyer){
     var comp = cfg.companies.filter(function(c){ return normName(c.name) === normName(f.buyer); })[0];
-    if (!comp) add('buyerName', true, '购买方抬头不符', '「' + f.buyer + '」不在公司抬头列表里', ['buyer']);
-    else {
-      add('buyerName', false, '购买方抬头一致', comp.name);
+    var nearCo = isOcr && !comp ? cfg.companies.filter(function(c){ return X.editDistance(normName(c.name), normName(f.buyer)) <= 2; })[0] : null;
+    if (!comp && nearCo){ comp = nearCo; add('buyerName', true, '购买方名称与抬头差一两个字', '识别为「' + f.buyer + '」，公司抬头是「' + nearCo.name + '」' + ocrHint, ['buyer'], 'review'); }
+    else if (!comp) add('buyerName', true, '购买方抬头不符', '「' + f.buyer + '」不在公司抬头列表里' + (isOcr ? ocrHint : ''), ['buyer'], isOcr ? 'review' : null);
+    if (comp) {
+      if (!nearCo) add('buyerName', false, '购买方抬头一致', comp.name);
       if (!f.buyerTax) add('buyerTax', true, '未识别到购买方税号', '公司报销的发票需要有购买方税号', ['buyerTax'], 'review');
-      else if (normTax(f.buyerTax) !== normTax(comp.taxId)) add('buyerTax', true, '购买方税号与公司不一致', '票面 ' + f.buyerTax + '，' + comp.name + ' 应为 ' + comp.taxId, ['buyerTax']);
+      else if (normTax(f.buyerTax) !== normTax(comp.taxId)){
+        var close = isOcr && X.editDistance(normTax(f.buyerTax), normTax(comp.taxId)) <= 2;
+        add('buyerTax', true, '购买方税号与公司不一致', '票面 ' + f.buyerTax + '，' + comp.name + ' 应为 ' + comp.taxId + (close ? ocrHint : ''), ['buyerTax'], close ? 'review' : null);
+      }
       else add('buyerTax', false, '购买方税号一致', comp.taxId);
     }
   }
 
   if (a != null && t != null && T != null){
     var diff = r2(a + t - T);
-    if (Math.abs(diff) > 0.01) add('sum', true, '金额不平', fmtN(a) + ' + ' + fmtN(t) + ' = ' + fmtN(r2(a+t)) + '，票面价税合计 ' + fmtN(T) + '，差 ' + fmtN(Math.abs(diff)), ['amount','tax','total']);
+    if (Math.abs(diff) > 0.01) add('sum', true, '金额不平', fmtN(a) + ' + ' + fmtN(t) + ' = ' + fmtN(r2(a+t)) + '，票面价税合计 ' + fmtN(T) + '，差 ' + fmtN(Math.abs(diff)) + (isOcr ? ocrHint : ''), ['amount','tax','total'], isOcr ? 'review' : null);
     else add('sum', false, '金额平衡', fmtN(a) + ' + ' + fmtN(t) + ' = ' + fmtN(T));
   }
 
@@ -183,6 +191,7 @@ function audit(inv, all){
   if (T != null && cfg.big != null && T > cfg.big) add('bigAmt', true, '大额发票', '单张 ' + fmt(T) + '，超过 ' + fmt(cfg.big), ['total']);
   if (f.sellerTax && !TAX_RE.test(normTax(f.sellerTax))) add('sellerTax', true, '销售方税号格式异常', f.sellerTax, ['sellerTax']);
 
+  if (inv.qr && inv.qr.mismatch && inv.qr.mismatch.length) add('unclear', true, '与二维码不一致', inv.qr.mismatch.join('、') + '的识别结果和发票二维码不同，已按二维码修正，请核对', []);
   checks.push({id:'verify', k:'skip', title:'真伪查验', detail:'演示版未接入查验接口', fields:[]});
   var order = {fail:0, warn:1, ok:2, skip:3};
   checks.sort(function(x,y){ return order[x.k] - order[y.k]; });
@@ -197,7 +206,7 @@ function auditAll(){
 var LV = {block:{t:'拦截', i:'✕'}, review:{t:'复核', i:'▲'}, pass:{t:'通过', i:'●'}};
 var DEC = {approved:'已人工通过', rejected:'已驳回', returned:'已退回补充说明'};
 function chip(inv, au){
-  if (inv.status === 'recognizing') return '<span class="chip idle"><span class="spin"></span>识别中</span>';
+  if (inv.status === 'recognizing') return '<span class="chip idle"><span class="spin"></span>' + (inv.stage === '排队中' ? '排队中' : '识别中') + '</span>';
   if (inv.status === 'error') return inv.errCode === 'no_ai' ? '<span class="chip review">待补录</span>' : '<span class="chip block">识别失败</span>';
   var l = LV[au.level]; return '<span class="chip ' + au.level + '">' + l.i + ' ' + l.t + '</span>';
 }
@@ -234,7 +243,9 @@ function makeSamples(){
 }
 function emptyFields(){ return {type:'', cat:'其他', no:'', code:'', date:'', buyer:'', buyerTax:'', seller:'', sellerTax:'', amount:null, tax:null, total:null, rate:null, items:''}; }
 
-/* ---------- AI 识别 ---------- */
+/* ---------- 识别（内置优先，AI 可选） ---------- */
+var X = window.InvoiceExtract;
+var METHOD = {'pdf-text':'PDF 文字直接读取', xml:'数电票 XML', ofd:'OFD 文字读取', ocr:'内置文字识别（OCR）', ai:'AI 识别', manual:'手动录入', sample:'示例数据'};
 var aiState = 'loading', aiInfo = null, aiTest = null;
 var fileMap = {}; // 本次会话的原始文件，用于重新识别
 var queue = [], busy = false;
@@ -256,46 +267,154 @@ function callAI(req){
 function aiErr(e){
   var code = e && e.code;
   var M = {
-    not_granted:'没有允许本页面调用 Claude，可以手动补录字段', sampling_disabled:'当前账号无法使用 AI 识别，可以手动补录',
-    rate_limited:'调用太频繁或用量已达上限，请稍后重新识别', session_expired:'登录已过期，刷新页面后再试',
-    image_rejected:'图片无法识别，请换一张清晰的 JPG 或 PNG', images_unavailable:'当前环境不能把图片发给 AI，可以手动补录',
-    invalid_json:'AI 返回的格式不对，可以点「重新识别」', refused:'AI 未能处理这张图片，请手动补录', empty_completion:'AI 没有返回结果，可以重新识别',
-    prompt_too_large:'文件内容太长，请上传 PDF 或图片版', ofd:'暂不支持 OFD 格式，请上传同一张发票的 PDF 版', no_ai:'还没设置 AI 识别服务。可以对照左边的原件手动补录下面的字段，或到「AI 设置」填好 API Key 后点「重新识别」',
-    decode:'读不出这个文件，请换成 JPG、PNG、PDF 或 XML', pdf:'PDF 渲染失败，请截图后上传图片'
+    ofd:'读不出这个 OFD 文件，请上传同一张发票的 PDF 版', no_ai:'没有识别出发票内容，可以对照原件手动补录',
+    decode:'读不出这个文件，请换成 JPG、PNG、PDF、XML 或 OFD', pdf:'PDF 打不开或已损坏，请重新下载后上传，或截图后上传图片',
+    ocr:'内置文字识别没能启动，请重新识别；仍不行可以手动补录', xml:'读不出这个 XML 里的发票信息，请上传 PDF 版'
   };
   if (/^(auth|rate|network|server|http|config|parse|empty|no_key)$/.test(code) && e.message) return e.message + (code === 'parse' || code === 'empty' ? '，可以点「重新识别」' : '');
   return M[code] || (e && e.message) || '识别出错，可以点「重新识别」';
 }
-function toJpeg(blob, maxW, q){
+
+/* 图片和 PDF 处理 */
+function loadImage(blob){
   return new Promise(function(res, rej){
     var url = URL.createObjectURL(blob), img = new Image();
-    img.onload = function(){
-      var s = Math.min(1, maxW / img.naturalWidth), c = document.createElement('canvas');
-      c.width = Math.max(1, Math.round(img.naturalWidth*s)); c.height = Math.max(1, Math.round(img.naturalHeight*s));
-      var x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0,0,c.width,c.height); x.drawImage(img,0,0,c.width,c.height);
-      URL.revokeObjectURL(url);
-      c.toBlob(function(b){ b ? res(b) : rej({code:'decode'}); }, 'image/jpeg', q);
-    };
+    img.onload = function(){ URL.revokeObjectURL(url); res(img); };
     img.onerror = function(){ URL.revokeObjectURL(url); rej({code:'decode'}); };
     img.src = url;
   });
 }
+function drawTo(src, w, h){
+  var c = document.createElement('canvas'); c.width = Math.max(1, Math.round(w)); c.height = Math.max(1, Math.round(h));
+  var x = c.getContext('2d', {willReadFrequently:true}); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
+  x.imageSmoothingQuality = 'high'; x.drawImage(src, 0, 0, c.width, c.height);
+  return c;
+}
+function scaled(c, maxW, minW){
+  var w = c.width, s = 1;
+  if (maxW && w > maxW) s = maxW / w;
+  if (minW && w < minW) s = minW / w;
+  return s === 1 ? c : drawTo(c, c.width * s, c.height * s);
+}
+function canvasToBlob(c, q){ return new Promise(function(res, rej){ c.toBlob(function(b){ b ? res(b) : rej({code:'decode'}); }, 'image/jpeg', q || 0.85); }); }
 function blobToDataURL(b){ return new Promise(function(res){ var r = new FileReader(); r.onload = function(){ res(r.result); }; r.onerror = function(){ res(null); }; r.readAsDataURL(b); }); }
-var pdfLib = null;
+function previewOf(c){ return canvasToBlob(scaled(c, 1100), 0.72).then(blobToDataURL); }
 function loadPdf(){
   if (!window.pdfjsLib) return Promise.reject({code:'pdf'});
   window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdf.worker.min.js';
   return Promise.resolve(window.pdfjsLib);
 }
-function pdfToJpeg(file){
-  return loadPdf().then(function(lib){ return file.arrayBuffer().then(function(buf){ return lib.getDocument({data:buf, isEvalSupported:false}).promise; }); })
-  .then(function(doc){ return doc.getPage(1); })
-  .then(function(page){
-    var vp = page.getViewport({scale:1}), sc = Math.min(3, 1700 / vp.width), v = page.getViewport({scale:sc});
-    var c = document.createElement('canvas'); c.width = Math.round(v.width); c.height = Math.round(v.height);
-    var x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0,0,c.width,c.height);
-    return page.render({canvasContext:x, viewport:v}).promise.then(function(){ return new Promise(function(res, rej){ c.toBlob(function(b){ b ? res(b) : rej({code:'pdf'}); }, 'image/jpeg', 0.9); }); });
-  }).catch(function(e){ throw (e && e.code) ? e : {code:'pdf'}; });
+function openPdf(file){
+  return loadPdf().then(function(lib){ return file.arrayBuffer().then(function(buf){ return lib.getDocument({data:buf, isEvalSupported:false, cMapUrl:'vendor/cmaps/', cMapPacked:true, standardFontDataUrl:'vendor/standard_fonts/'}).promise; }); })
+    .then(function(doc){ return doc.getPage(1); })
+    .catch(function(e){ throw (e && e.code) ? e : {code:'pdf'}; });
+}
+function pdfRows(page){
+  var vp = page.getViewport({scale:1});
+  return page.getTextContent().then(function(tc){ return X.rowsFromPdfItems(tc.items, vp.height); }).catch(function(){ return []; });
+}
+function pdfCanvas(page, targetW){
+  var vp = page.getViewport({scale:1}), v = page.getViewport({scale:Math.min(4, targetW / vp.width)});
+  var c = document.createElement('canvas'); c.width = Math.round(v.width); c.height = Math.round(v.height);
+  var x = c.getContext('2d', {willReadFrequently:true}); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
+  return page.render({canvasContext:x, viewport:v}).promise.then(function(){ return c; });
+}
+function inflateRaw(u8){
+  var s = new Blob([u8]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+  return new Response(s).arrayBuffer().then(function(b){ return new Uint8Array(b); });
+}
+
+/* 二维码 */
+function decodeQr(c){
+  if (!window.jsQR) return null;
+  function tryRegion(sx, sy, sw, sh, outW){
+    var s = outW / sw, t = document.createElement('canvas');
+    t.width = Math.round(sw * s); t.height = Math.round(sh * s);
+    var x = t.getContext('2d', {willReadFrequently:true}); x.fillStyle = '#fff'; x.fillRect(0, 0, t.width, t.height);
+    x.drawImage(c, sx, sy, sw, sh, 0, 0, t.width, t.height);
+    var d = x.getImageData(0, 0, t.width, t.height);
+    var r = window.jsQR(d.data, t.width, t.height, {inversionAttempts:'dontInvert'});
+    return r && r.data ? r.data : null;
+  }
+  var W = c.width, H = c.height, tries = [
+    [0, 0, W * 0.35, H * 0.45, 900], [0, 0, W, H, Math.min(W, 1600)], [W * 0.6, 0, W * 0.4, H * 0.45, 900], [0, 0, W, H, Math.min(W, 2400)]
+  ];
+  for (var i = 0; i < tries.length; i++) {
+    try { var s = tryRegion.apply(null, tries[i]); if (s && X.parseQr(s)) return s; } catch (e) { /* 继续 */ }
+  }
+  return null;
+}
+
+/* 内置文字识别（Tesseract，离线） */
+var ocr = {worker:null, starting:null, onProgress:null, idle:null};
+function ocrWorker(){
+  clearTimeout(ocr.idle);
+  if (ocr.worker) return Promise.resolve(ocr.worker);
+  if (ocr.starting) return ocr.starting;
+  if (!window.Tesseract) return Promise.reject({code:'ocr'});
+  var base = new URL('vendor/tesseract/', location.href).href;
+  ocr.starting = window.Tesseract.createWorker('chi_sim', 1, {
+    workerPath: base + 'worker.min.js', corePath: base + 'core', langPath: base + 'lang',
+    gzip: true, cacheMethod: 'none', workerBlobURL: false,
+    logger: function(m){ if (ocr.onProgress && m && m.status === 'recognizing text') ocr.onProgress(m.progress || 0); },
+    errorHandler: function(){ /* 由 recognize 的 Promise 处理 */ }
+  }).then(function(w){
+    return w.setParameters({preserve_interword_spaces:'1', user_defined_dpi:'300'}).then(function(){ ocr.worker = w; ocr.starting = null; return w; });
+  }).catch(function(e){ ocr.starting = null; throw {code:'ocr', message: '内置文字识别没能启动（' + ((e && e.message) || e) + '），请重新识别'}; });
+  return ocr.starting;
+}
+function ocrRelease(){
+  clearTimeout(ocr.idle);
+  ocr.idle = setTimeout(function(){ if (ocr.worker && !busy){ ocr.worker.terminate(); ocr.worker = null; } }, 3 * 60 * 1000);
+}
+function grayscale(c){
+  var x = c.getContext('2d', {willReadFrequently:true}), d = x.getImageData(0, 0, c.width, c.height), p = d.data, i, lo = 255, hi = 0;
+  var hist = new Uint32Array(256);
+  for (i = 0; i < p.length; i += 4){ var g = (p[i] * 0.299 + p[i+1] * 0.587 + p[i+2] * 0.114) | 0; p[i] = g; hist[g]++; }
+  var n = p.length / 4, acc = 0;
+  for (i = 0; i < 256; i++){ acc += hist[i]; if (acc > n * 0.01){ lo = i; break; } }
+  acc = 0;
+  for (i = 255; i >= 0; i--){ acc += hist[i]; if (acc > n * 0.01){ hi = i; break; } }
+  var span = Math.max(40, hi - lo);
+  for (i = 0; i < p.length; i += 4){ var v = Math.max(0, Math.min(255, ((p[i] - lo) * 255 / span) | 0)); p[i] = p[i+1] = p[i+2] = v; }
+  x.putImageData(d, 0, 0);
+  return c;
+}
+function ocrRows(c, onProgress){
+  var img = grayscale(scaled(c, 2600, 2000));
+  return ocrWorker().then(function(w){
+    ocr.onProgress = onProgress;
+    return w.recognize(img, {}, {text:true, tsv:true});
+  }).then(function(r){
+    ocr.onProgress = null; ocrRelease();
+    var d = (r && r.data) || {};
+    var rows = d.tsv ? X.rowsFromTsv(d.tsv) : [];
+    if (!rows.length) rows = X.rowsFromText(d.text);
+    return rows;
+  }, function(e){ ocr.onProgress = null; throw (e && e.code) ? e : {code:'ocr', message: '内置文字识别出错（' + ((e && e.message) || e) + '）'}; });
+}
+
+/* 识别流程 */
+var lastPaint = 0;
+function stage(inv, text){
+  inv.stage = text;
+  var now = Date.now();
+  if (now - lastPaint > 300){ lastPaint = now; render(); }
+}
+function fileKind(file){
+  var n = file.name.toLowerCase(), t = file.type || '';
+  if (/\.xml$/.test(n) || /xml/.test(t)) return 'xml';
+  if (/\.ofd$/.test(n)) return 'ofd';
+  if (/\.pdf$/.test(n) || t === 'application/pdf') return 'pdf';
+  return 'image';
+}
+function finish(inv, res, method){
+  X.score(res, method);
+  var f = res.f;
+  if (CATS.indexOf(f.cat) < 0) f.cat = '其他';
+  inv.f = f; inv.method = method; inv.conf = res.conf;
+  inv.aiNotes = (res.notes || []).join('；');
+  inv.status = 'ready'; inv.err = ''; inv.errCode = ''; inv.stage = '';
 }
 function applyAI(inv, r){
   r = r || {};
@@ -307,42 +426,108 @@ function applyAI(inv, r){
   };
   var c = Number(r.confidence); inv.conf = isFinite(c) ? Math.max(0, Math.min(1, c)) : null;
   inv.aiNotes = String(r.notes || '');
-  inv.status = 'ready'; inv.err = '';
+  inv.method = 'ai'; inv.status = 'ready'; inv.err = ''; inv.errCode = ''; inv.stage = '';
 }
-function recognize(inv, file){
-  var name = file.name.toLowerCase();
-  if (/\.ofd$/.test(name)) return Promise.reject({code:'ofd'});
-  if (/\.xml$/.test(name) || file.type === 'text/xml' || file.type === 'application/xml'){
-    if (aiState !== 'on') return Promise.reject({code:'no_ai'});
-    return file.text().then(function(txt){ return callAI({prompt:PROMPT_XML, text:txt.slice(0, 80000)}); }).then(function(r){ applyAI(inv, r); if (inv.conf == null) inv.conf = 0.99; });
+function withQr(inv, qrText){
+  var q = X.parseQr(qrText);
+  if (!q) return;
+  var res = {f:inv.f, notes:[]};
+  X.applyQr(res, q);
+  if (res.notes.length) inv.aiNotes = [inv.aiNotes].concat(res.notes).filter(Boolean).join('；');
+  inv.qr = {no:q.no, date:q.date, amount:q.amount, mismatch:(res.qr && res.qr.mismatch) || []};
+}
+// 图片类：配置了 AI 就用 AI（更准），否则或 AI 出错时用内置 OCR
+function fromImage(inv, c, qrText, opts){
+  var useAI = aiState === 'on' && !(opts && opts.noAI);
+  if (useAI){
+    stage(inv, 'AI 识别中');
+    return canvasToBlob(scaled(c, 1600), 0.88).then(blobToDataURL)
+      .then(function(d){ return callAI({prompt:PROMPT, imageB64:String(d).split(',')[1]}); })
+      .then(function(r){ applyAI(inv, r); withQr(inv, qrText); })
+      .catch(function(e){
+        var why = aiErr(e);
+        return fromImage(inv, c, qrText, {noAI:true}).then(function(){
+          inv.aiNotes = ['AI 识别失败（' + why + '），已改用内置识别'].concat(inv.aiNotes ? [inv.aiNotes] : []).join('；');
+        });
+      });
   }
-  var getImg = (/\.pdf$/.test(name) || file.type === 'application/pdf') ? pdfToJpeg(file) : toJpeg(file, 1800, 0.9);
-  return getImg.then(function(big){
-    return toJpeg(big, 1100, 0.72).then(blobToDataURL).then(function(d){ inv.img = d; })
-      .then(function(){ if (aiState !== 'on') throw {code:'no_ai'}; return toJpeg(big, 1600, 0.88); }).then(blobToDataURL)
-      .then(function(d){ return callAI({prompt:PROMPT, imageB64:String(d).split(',')[1]}); });
-  }).then(function(r){ applyAI(inv, r); });
+  stage(inv, '文字识别 0%');
+  return ocrRows(c, function(p){ stage(inv, '文字识别 ' + Math.round(p * 100) + '%'); }).then(function(rows){
+    var res = X.parseText(rows);
+    var q = X.parseQr(qrText);
+    if (q) X.applyQr(res, q);
+    X.snapBuyer(res, cfg.companies);
+    finish(inv, res, 'ocr');
+    if (q) inv.qr = {no:q.no, date:q.date, amount:q.amount, mismatch:(res.qr && res.qr.mismatch) || []};
+  });
+}
+function recognize(inv, file, opts){
+  opts = opts || {};
+  var kind = fileKind(file);
+  inv.qr = null;
+  stage(inv, '读取文件');
+  if (kind === 'xml'){
+    return file.text().then(function(txt){
+      var res = X.parseXml(txt);
+      if (res.f.no && res.f.total != null) return finish(inv, res, 'xml');
+      if (aiState === 'on'){ stage(inv, 'AI 识别中'); return callAI({prompt:PROMPT_XML, text:txt.slice(0, 80000)}).then(function(r){ applyAI(inv, r); if (inv.conf == null) inv.conf = 0.99; }); }
+      if (!res.f.no && res.f.total == null) throw {code:'xml'};
+      finish(inv, res, 'xml');
+    });
+  }
+  if (kind === 'ofd'){
+    return file.arrayBuffer().then(function(buf){ return X.parseOfd(buf, inflateRaw); })
+      .then(function(o){ finish(inv, o.res, o.method); })
+      .catch(function(e){ throw (e && e.code) ? e : {code:'ofd'}; });
+  }
+  if (kind === 'pdf'){
+    return openPdf(file).then(function(page){
+      return Promise.all([pdfRows(page), pdfCanvas(page, 2000)]).then(function(r){
+        var rows = r[0], c = r[1];
+        return previewOf(c).then(function(d){ inv.img = d; }).then(function(){
+          stage(inv, '读取二维码');
+          var qrText = decodeQr(c);
+          var res = X.parseText(rows);
+          if (!opts.forceImage && X.looksReadable(res)){
+            var q = X.parseQr(qrText);
+            if (q) X.applyQr(res, q);
+            finish(inv, res, 'pdf-text');
+            if (q) inv.qr = {no:q.no, date:q.date, amount:q.amount, mismatch:(res.qr && res.qr.mismatch) || []};
+            return;
+          }
+          return fromImage(inv, c, qrText, opts);  // 扫描版 PDF：按图片识别
+        });
+      });
+    });
+  }
+  return loadImage(file).then(function(img){
+    var c = drawTo(img, img.naturalWidth, img.naturalHeight);
+    return previewOf(c).then(function(d){ inv.img = d; }).then(function(){
+      stage(inv, '读取二维码');
+      return fromImage(inv, c, decodeQr(c), opts);
+    });
+  });
 }
 function enqueue(files){
   var list = Array.prototype.slice.call(files || []);
   if (!list.length) return;
   list.forEach(function(file, i){
-    var inv = {id:uid() + i, createdAt:Date.now() + i, source:'ai', file:file.name, status:'recognizing', conf:null, aiNotes:'', decision:null, memo:'', f:emptyFields()};
-    invoices.unshift(inv); fileMap[inv.id] = file; queue.push(inv);
+    var inv = {id:uid() + i, createdAt:Date.now() + i, source:'file', file:file.name, status:'recognizing', stage:'排队中', conf:null, aiNotes:'', decision:null, memo:'', f:emptyFields()};
+    invoices.unshift(inv); fileMap[inv.id] = file; queue.push({inv:inv});
   });
   save();
   if (route().v !== 'ledger') location.hash = 'ledger';
   render(); pump();
-  if (aiState !== 'on') toast('已上传 ' + list.length + ' 张。还没设置 AI，点开发票可对照原件手动补录');
 }
 function pump(){
   if (busy) return;
-  var inv = queue.shift();
-  if (!inv){ render(); return; }
+  var job = queue.shift();
+  if (!job){ render(); return; }
+  var inv = job.inv;
   busy = true; inv.status = 'recognizing'; render();
-  recognize(inv, fileMap[inv.id]).catch(function(e){
-    inv.status = 'error'; inv.err = aiErr(e); inv.errCode = (e && e.code) || '';
-    if (e && e.code === 'no_ai' && !inv.f.buyer && cfg.companies[0]){ inv.f.buyer = cfg.companies[0].name; inv.f.buyerTax = cfg.companies[0].taxId; }
+  recognize(inv, fileMap[inv.id], job.opts).catch(function(e){
+    inv.status = 'error'; inv.err = aiErr(e); inv.errCode = (e && e.code) || ''; inv.stage = '';
+    if (!inv.f.buyer && cfg.companies[0]){ inv.f.buyer = cfg.companies[0].name; inv.f.buyerTax = cfg.companies[0].taxId; }
   })
   .then(function(){ busy = false; save(); render(); pump(); });
 }
@@ -384,19 +569,20 @@ function viewLedger(){
     '<div class="tile inv"><span class="k">需要人工看的比例</span><span class="v">' + pct + '%</span><span class="d">' + (ready.length ? '原来 ' + ready.length + ' 张都要看，现在 ' + manual + ' 张' : '上传发票后自动计算') + '</span></div>' +
   '</section>';
 
-  var aiNote = '';
-  if (aiState === 'nokey') aiNote = '<span class="warnline">还没设置 AI 识别：上传后可以对照原件手动补录；<a href="#ai">到 AI 设置填写 API Key</a> 后会自动识别。</span>';
+  var aiNote = aiState === 'on' ? '<span class="muted" style="font-size:12px">已开启 AI：照片和扫描件用 AI 识别，PDF、XML 直接读取。</span>'
+    : '<span class="muted" style="font-size:12px">不需要联网和 API Key。照片识别想更准，可以在 <a href="#ai">AI 设置</a> 里开启 AI。</span>';
 
   h += '<div class="cols"><div class="col-main">' +
     '<section class="drop" id="drop" aria-label="上传发票">' +
       '<svg aria-hidden="true" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent);flex:none"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M12 18v-6"/><path d="M9 15l3-3 3 3"/></svg>' +
-      '<div class="drop-text"><strong>把发票拖到这里，或点击选择文件</strong><span class="muted" style="font-size:13px">支持 PDF、JPG、PNG、数电票 XML，可一次选多张。AI 识别字段后按规则自动审核。</span>' + aiNote + '</div>' +
+      '<div class="drop-text"><strong>把发票拖到这里，或点击选择文件</strong><span class="muted" style="font-size:13px">支持 PDF、OFD、数电票 XML、JPG、PNG，可一次选多张。自动识别字段并按规则审核。</span>' + aiNote + '</div>' +
       '<div class="drop-actions"><button class="btn lg primary" type="button" data-act="pick">上传发票</button><button class="btn lg" type="button" data-act="manual">手动录入</button></div>' +
     '</section>';
 
   if (processing.length || queue.length){
     var total = processing.length + queue.length;
-    h += '<div class="progress" role="status"><span class="spin"></span><span class="names">正在识别 ' + total + ' 张：' + esc(processing.concat(queue).map(function(i){ return i.file; }).slice(0,3).join('、')) + (total > 3 ? ' 等' : '') + '</span><span>每张约 10–40 秒</span></div>';
+    var cur = processing.filter(function(i){ return i.stage && i.stage !== '排队中'; })[0];
+    h += '<div class="progress" role="status"><span class="spin"></span><span class="names">正在识别 ' + total + ' 张' + (cur ? '：' + esc(cur.file) + ' · ' + esc(cur.stage) : '') + '</span><span>PDF 一两秒，图片约 10–30 秒</span></div>';
   }
 
   var list = sortedList(A).filter(function(i){
@@ -417,7 +603,7 @@ function viewLedger(){
     h += '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>风险</th><th>发票号码</th><th>开票日期</th><th>销售方</th><th>类别</th><th class="num">价税合计</th><th>审核发现</th></tr></thead><tbody>';
     list.forEach(function(i){
       var au = A[i.id], issue;
-      if (i.status === 'recognizing') issue = '<span class="muted">' + esc(i.file) + '</span>';
+      if (i.status === 'recognizing') issue = '<span class="muted">' + esc(i.file) + (i.stage ? ' · ' + esc(i.stage) : '') + '</span>';
       else if (i.status === 'error') issue = (i.errCode === 'no_ai' ? '未设置 AI 识别，点开对照原件补录，或设置 AI 后重新识别' : esc(i.err)) + ' <span class="muted">· ' + esc(i.file) + '</span>';
       else { var bad = au.checks.filter(function(c){ return c.k === 'fail' || c.k === 'warn'; }); issue = bad.length ? esc(bad.map(function(c){ return c.title; }).join('；')) : '<span class="muted">—</span>'; }
       h += '<tr data-open="' + i.id + '" tabindex="0" aria-label="查看 ' + esc(i.f.seller || i.file) + '">' +
@@ -477,14 +663,16 @@ function viewReview(id){
   h += '<div class="cols"><section class="rv-left" aria-label="发票原件">';
   if (inv.img) h += '<div class="card pad"><img class="orig" src="' + inv.img + '" alt="发票原件：' + esc(inv.file) + '"></div>';
   h += '<div class="card pad stack"><div class="sub">' + (inv.img ? '按识别结果还原，黄色是触发规则的字段' : '票面信息（黄色是触发规则的字段）') + '</div><div class="paper-wrap" id="rv-paper">' + paper(inv, au) + '</div></div>';
-  h += '<p class="note">' + (inv.source === 'sample' ? '这是示例数据。' : inv.source === 'manual' ? '手动录入。' : '来源文件：' + esc(inv.file) + '。') + (inv.conf != null ? ' AI 识别置信度 ' + Math.round(inv.conf*100) + '%。' : '') + (inv.aiNotes ? ' 识别备注：' + esc(inv.aiNotes) : '') + '</p></section>';
+  h += '<p class="note">' + (inv.source === 'sample' ? '这是示例数据。' : inv.source === 'manual' ? '手动录入。' : '来源文件：' + esc(inv.file) + '。') + (inv.method && METHOD[inv.method] ? ' 识别方式：' + METHOD[inv.method] + '。' : '') + (inv.conf != null ? ' 置信度 ' + Math.round(inv.conf*100) + '%。' : '') + (inv.qr ? ' 二维码：已读取' + (inv.qr.mismatch && inv.qr.mismatch.length ? '，' + esc(inv.qr.mismatch.join('、')) + '已按二维码修正' : '，号码和日期一致') + '。' : '') + (inv.aiNotes ? ' 识别备注：' + esc(inv.aiNotes) : '') + '</p></section>';
 
   h += '<div class="rv-right">';
   if (inv.status === 'error') h += '<div class="errbox" role="alert">' + esc(inv.err) + '</div>';
   if (inv.status === 'recognizing') h += '<div class="progress"><span class="spin"></span>正在识别 ' + esc(inv.file) + '…</div>';
   h += '<section class="card pad stack" aria-label="审核结果" id="rv-checks">' + checksHtml(inv, au) + '</section>';
   h += '<section class="card pad stack" aria-label="识别字段"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap"><h2 class="h">识别字段</h2><span class="sub">改错后自动重新审核</span></div><div class="fgrid" id="rv-fields">' + fieldsHtml(inv, au) + '</div>' +
-    (fileMap[inv.id] ? '<div class="actions">' + (aiState === 'on' ? '<button class="btn sm" type="button" data-act="retry" data-id="' + inv.id + '"' + (inv.status === 'recognizing' ? ' disabled' : '') + '>重新识别</button>' : '<a class="btn sm" href="#ai">设置 AI 后可自动识别</a>') + '</div>' : '') + '</section>';
+    (fileMap[inv.id] ? '<div class="actions"><button class="btn sm" type="button" data-act="retry" data-id="' + inv.id + '"' + (inv.status === 'recognizing' ? ' disabled' : '') + '>重新识别</button>' +
+      (aiState === 'on' && inv.method !== 'ai' ? '<button class="btn sm" type="button" data-act="retry-ai" data-id="' + inv.id + '"' + (inv.status === 'recognizing' ? ' disabled' : '') + '>用 AI 重新识别</button>' : '') +
+      (aiState !== 'on' && inv.method === 'ocr' ? '<a class="btn sm" href="#ai">开启 AI 识别更准</a>' : '') + '</div>' : '') + '</section>';
   h += '<section class="card pad stack" aria-label="复核处理">' +
     '<label class="fld" for="memo">复核意见<textarea id="memo" rows="3" data-id="' + inv.id + '" placeholder="例如：已确认为 8 人客户招待，人均未超标，同意报销">' + esc(inv.memo) + '</textarea></label>' +
     '<div class="actions"><button class="btn lg danger" type="button" data-dec="rejected" data-id="' + inv.id + '">驳回</button><button class="btn lg" type="button" data-dec="returned" data-id="' + inv.id + '">退回补充说明</button>' +
@@ -572,7 +760,7 @@ function viewAI(){
     claude:'<ol><li>在 <a href="https://console.anthropic.com/" target="_blank" rel="noopener">console.anthropic.com</a> 创建 API Key</li><li>在中国大陆使用通常需要电脑开代理，软件会使用系统的代理设置</li></ol>',
     openai:'<ol><li>填写服务商提供的接口地址（一般以 /v1 结尾）、模型名称和 API Key</li><li>模型必须能识别图片，例如智谱的 glm-4v 系列</li></ol>'
   };
-  var h = '<div class="rl-head"><div class="stack" style="gap:4px"><h1>AI 设置</h1><span class="muted" style="font-size:13px">选择用来识别发票的 AI 服务。发票图片会发送给所选服务商识别，API Key 加密保存在这台电脑上。</span></div></div>';
+  var h = '<div class="rl-head"><div class="stack" style="gap:4px"><h1>AI 识别（可选）</h1><span class="muted" style="font-size:13px">不设置也能用：PDF、OFD、XML 直接读取，照片和截图用内置文字识别，全部在本机完成。开启 AI 后，照片和扫描件改用 AI 识别，准确率更高；发票图片会发送给所选服务商，API Key 加密保存在这台电脑上。</span></div></div>';
   h += '<div class="cols"><section class="card pad stack" style="flex:999 1 560px;min-width:0"><div class="fgrid">' +
     '<label class="fld wide" for="ai-provider">服务商<select id="ai-provider">' + Object.keys(P).map(function(k){ return '<option value="' + k + '"' + (k === d.provider ? ' selected' : '') + '>' + esc(P[k].name) + (k === 'qwen' ? '（国内推荐）' : '') + '</option>'; }).join('') + '</select></label>' +
     '<label class="fld wide" for="ai-key">API Key<input id="ai-key" type="password" autocomplete="off" class="mono" value="' + esc(ui.aiKeyDraft || '') + '" placeholder="' + (info.hasKey && d.provider === info.provider ? '已保存（尾号 ' + esc(info.keyTail) + '），不修改就留空' : '粘贴 API Key') + '"></label>' +
@@ -638,7 +826,10 @@ document.addEventListener('click', function(e){
   else if (act === 'del'){ ui.confirmDel = true; render(); }
   else if (act === 'del-no'){ ui.confirmDel = false; render(); }
   else if (act === 'del-yes'){ var id = t.getAttribute('data-id'); invoices = invoices.filter(function(i){ return i.id !== id; }); queue = queue.filter(function(i){ return i.id !== id; }); ui.confirmDel = false; save(); location.hash = 'ledger'; toast('已删除'); }
-  else if (act === 'retry'){ var iv = findInv(t.getAttribute('data-id')); if (iv && fileMap[iv.id]){ iv.status = 'recognizing'; queue.push(iv); render(); pump(); } }
+  else if (act === 'retry' || act === 'retry-ai'){
+    var iv = findInv(t.getAttribute('data-id'));
+    if (iv && fileMap[iv.id]){ iv.status = 'recognizing'; iv.stage = '排队中'; queue.push({inv:iv, opts: act === 'retry-ai' ? {forceImage:true} : {}}); render(); pump(); }
+  }
   else if (act === 'co-add'){ cfg.companies.push({name:'', taxId:''}); save(); render(); var ins = $$('[data-co][data-key="name"]'); if (ins.length) ins[ins.length-1].focus(); }
   else if (act === 'co-del'){ cfg.companies.splice(Number(t.getAttribute('data-i')), 1); save(); render(); }
   else if (act === 'reset-cfg'){ cfg = defaultCfg(); save(); render(); toast('已恢复默认规则'); }
@@ -661,7 +852,7 @@ document.addEventListener('change', function(e){
     else if (k === 'buyerTax' || k === 'sellerTax') v = normTax(v);
     inv.f[k] = v;
     if (inv.status === 'error'){ inv.status = 'ready'; inv.err = ''; }
-    if (inv.source === 'ai') inv.conf = inv.conf == null ? null : Math.max(inv.conf, 0.8);
+    if (inv.conf != null) inv.conf = Math.max(inv.conf, 0.8);
     save(); refreshReview(inv);
     return;
   }
@@ -700,7 +891,7 @@ function buildCsv(){
     return [LV[au.level].t, i.decision ? DEC[i.decision] : (au.level === 'pass' ? '自动通过' : '待处理'), f.type, longNum(f.code), longNum(f.no), f.date, f.buyer, f.buyerTax, f.seller, f.sellerTax,
       num(f.amount), num(f.tax), num(f.total), f.rate == null ? '' : f.rate + '%', f.cat, f.items,
       au.checks.filter(function(c){ return c.k === 'fail' || c.k === 'warn'; }).map(function(c){ return c.title + '：' + c.detail; }).join('；'),
-      i.memo, i.file, {sample:'示例', ai:'AI 识别', manual:'手动录入'}[i.source] || ''];
+      i.memo, i.file, (i.source === 'sample' ? '示例' : i.source === 'manual' ? '手动录入' : METHOD[i.method] || (i.source === 'ai' ? 'AI 识别' : ''))];
   });
   return '﻿' + [head].concat(rows).map(function(r){ return r.map(function(c, idx){ return (idx === 3 || idx === 4) ? c : csvCell(c); }).join(','); }).join('\r\n');
 }

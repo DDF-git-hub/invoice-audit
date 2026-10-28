@@ -1,14 +1,17 @@
 {
   "name": "invoice-audit-desk",
   "productName": "发票审核台",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "发票审核台 - 发票自动识别与审核",
   "main": "main.js",
   "author": "财务部",
   "license": "UNLICENSED",
   "scripts": {
-    "start": "node scripts/copy-pdfjs.js && electron .",
-    "dist": "node scripts/copy-pdfjs.js && electron-builder --win --x64"
+    "vendor": "node scripts/copy-vendor.js",
+    "start": "npm run vendor && electron .",
+    "dist": "npm run vendor && electron-builder --win --x64",
+    "test": "node test/unit.js",
+    "test:e2e": "node test/e2e.js"
   },
   "dependencies": {
     "electron-updater": "6.3.9"
@@ -16,7 +19,14 @@
   "devDependencies": {
     "electron": "33.2.1",
     "electron-builder": "25.1.8",
-    "pdfjs-dist": "3.11.174"
+    "pdfjs-dist": "3.11.174",
+    "tesseract.js": "5.1.1",
+    "tesseract.js-core": "5.1.1",
+    "@tesseract.js-data/chi_sim": "1.0.0",
+    "jsqr": "1.4.0",
+    "pngjs": "7.0.0",
+    "jpeg-js": "0.4.4",
+    "playwright-core": "1.48.2"
   },
   "build": {
     "appId": "cn.local.invoiceaudit",
@@ -29,7 +39,9 @@
       "main.js",
       "preload.js",
       "renderer/**/*",
-      "!renderer/**/*.map"
+      "!renderer/**/*.map",
+      "!renderer/vendor/tesseract/core/*.wasm",
+      "!renderer/vendor/tesseract/core/*-relaxedsimd*"
     ],
     "asar": true,
     "win": {

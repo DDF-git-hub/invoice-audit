@@ -1,3 +1,5 @@
 node_modules/
 dist/
 renderer/vendor/
+test-output/
+__pycache__/

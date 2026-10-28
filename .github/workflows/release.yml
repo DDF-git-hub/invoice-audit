@@ -1,21 +1,59 @@
-name: 打包发布
+name: 测试与发布
 
-# 每次推送到 main 都会在云端打包 Windows 版本。
+# 每次推送都会先在云端测试识别效果（启动软件、上传模拟发票、检查结果）。
+# 推送到 main 且测试通过后，打包 Windows 版本；
 # package.json 里的 version 是新版本号时，自动发布到 Releases，已安装的客户端会自动更新。
 on:
   push:
-    branches: [main]
+    branches: ['**']
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: release
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 安装依赖
+        run: npm install --no-audit --no-fund
+
+      - name: 准备识别组件
+        run: npm run vendor
+
+      - name: 识别单元测试
+        run: npm test
+
+      - name: 安装界面测试需要的系统组件
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb libnss3 libgbm1 libgtk-3-0 libxss1 libasound2t64 fonts-noto-cjk >/dev/null || sudo apt-get install -y -qq xvfb libnss3 libgbm1 libgtk-3-0 libxss1 libasound2 fonts-noto-cjk >/dev/null
+
+      - name: 启动软件上传发票测试
+        run: xvfb-run -a --server-args="-screen 0 1600x1000x24" npm run test:e2e
+
+      - name: 保存测试截图和报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output
+          path: test-output/
+          retention-days: 7
+
   build-windows:
+    needs: test
+    if: github.ref == 'refs/heads/main'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

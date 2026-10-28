@@ -1,9 +1,29 @@
 // 发票审核台 - Electron 主进程
 // 负责：窗口、本地数据文件、AI 识别接口调用（API Key 只在主进程里使用，不暴露给页面）
 'use strict';
-const { app, BrowserWindow, ipcMain, dialog, shell, safeStorage, Menu, net } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, safeStorage, Menu, net, protocol } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { pathToFileURL } = require('url');
+
+// 测试时可以指定独立的数据目录
+if (process.env.INVOICE_AUDIT_USERDATA) app.setPath('userData', process.env.INVOICE_AUDIT_USERDATA);
+
+// 界面通过 app://bundle/ 加载（而不是 file://），这样内置文字识别组件可以正常读取本地的识别模型
+protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } }]);
+const RENDERER_DIR = path.join(__dirname, 'renderer');
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.wasm': 'application/wasm', '.gz': 'application/octet-stream', '.png': 'image/png', '.svg': 'image/svg+xml' };
+function serveApp(request) {
+  const u = new URL(request.url);
+  const rel = decodeURIComponent(u.pathname).replace(/^\/+/, '') || 'index.html';
+  const file = path.normalize(path.join(RENDERER_DIR, rel));
+  if (!file.startsWith(RENDERER_DIR + path.sep)) return new Response('Forbidden', { status: 403 });
+  return net.fetch(pathToFileURL(file).toString()).then(async (r) => {
+    if (!r.ok) return r;
+    const type = MIME[path.extname(file).toLowerCase()];
+    return type ? new Response(await r.arrayBuffer(), { status: 200, headers: { 'content-type': type } }) : r;
+  }).catch(() => new Response('Not found', { status: 404 }));
+}
 
 if (!app.requestSingleInstanceLock()) { app.quit(); }
 
@@ -236,14 +256,15 @@ function createWindow() {
     return { action: 'deny' };
   });
   win.webContents.on('will-navigate', (e, url) => {
-    if (!url.startsWith('file://')) { e.preventDefault(); if (/^https:\/\//.test(url)) shell.openExternal(url); }
+    if (!url.startsWith('app://bundle/')) { e.preventDefault(); if (/^https:\/\//.test(url)) shell.openExternal(url); }
   });
-  win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  win.loadURL('app://bundle/index.html');
   win.webContents.once('did-finish-load', () => setTimeout(setupUpdates, 3000));
 }
 
 app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
 app.whenReady().then(() => {
+  protocol.handle('app', serveApp);
   // 每次启动前备份一份台账，防止意外损坏
   try { if (fs.existsSync(LEDGER())) fs.copyFileSync(LEDGER(), LEDGER() + '.bak'); } catch (e) { /* 忽略 */ }
   Menu.setApplicationMenu(Menu.buildFromTemplate([

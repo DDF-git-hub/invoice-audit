@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<EInvoice>
+  <Header>
+    <EIid>26312000000207718804</EIid>
+    <EInvoiceTag>SWEI3100</EInvoiceTag>
+    <Version>0.1</Version>
+    <InherentLabel>
+      <EInvoiceType><LabelCode>02</LabelCode><LabelName>普通发票</LabelName></EInvoiceType>
+    </InherentLabel>
+  </Header>
+  <EInvoiceData>
+    <SellerInformation>
+      <SellerIdNum>91310101607412385X</SellerIdNum>
+      <SellerName>上海小南国餐饮有限公司</SellerName>
+    </SellerInformation>
+    <BuyerInformation>
+      <BuyerIdNum>91310115MA1K4A2B3C</BuyerIdNum>
+      <BuyerName>上海示例科技有限公司</BuyerName>
+    </BuyerInformation>
+    <BasicInformation>
+      <TotalAmWithoutTax>1754.72</TotalAmWithoutTax>
+      <TotalTaxAm>105.28</TotalTaxAm>
+      <TotalTax-includedAmount>1860.00</TotalTax-includedAmount>
+      <TotalTax-includedAmountInChinese>壹仟捌佰陆拾圆整</TotalTax-includedAmountInChinese>
+      <Drawer>张敏</Drawer>
+      <RequestTime>2026-10-22 12:31:05</RequestTime>
+    </BasicInformation>
+    <IssuItemInformation>
+      <ItemName>*餐饮服务*餐费</ItemName>
+      <Quantity>1</Quantity>
+      <Amount>1754.72</Amount>
+      <TaxRate>0.06</TaxRate>
+      <ComTaxAm>105.28</ComTaxAm>
+    </IssuItemInformation>
+  </EInvoiceData>
+  <TaxSupervisionInfo>
+    <InvoiceNumber>26312000000207718804</InvoiceNumber>
+    <IssueTime>2026-10-22 12:31:05</IssueTime>
+    <TaxBureauCode>13100000000</TaxBureauCode>
+  </TaxSupervisionInfo>
+</EInvoice>

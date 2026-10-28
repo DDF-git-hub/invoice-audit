@@ -5,7 +5,7 @@ name: 测试与发布
 # package.json 里的 version 是新版本号时，自动发布到 Releases，已安装的客户端会自动更新。
 on:
   push:
-    branches: ['**']
+    branches: ['**', '!ci-results']
   workflow_dispatch:
 
 permissions:
@@ -30,10 +30,12 @@ jobs:
         run: npm install --no-audit --no-fund
 
       - name: 准备识别组件
-        run: npm run vendor
+        shell: bash
+        run: mkdir -p test-output && npm run vendor 2>&1 | tee test-output/vendor.log
 
       - name: 识别单元测试
-        run: npm test
+        shell: bash
+        run: npm test 2>&1 | tee test-output/unit.log
 
       - name: 安装界面测试需要的系统组件
         run: |
@@ -41,7 +43,8 @@ jobs:
           sudo apt-get install -y -qq xvfb libnss3 libgbm1 libgtk-3-0 libxss1 libasound2t64 fonts-noto-cjk >/dev/null || sudo apt-get install -y -qq xvfb libnss3 libgbm1 libgtk-3-0 libxss1 libasound2 fonts-noto-cjk >/dev/null
 
       - name: 启动软件上传发票测试
-        run: xvfb-run -a --server-args="-screen 0 1600x1000x24" npm run test:e2e
+        shell: bash
+        run: xvfb-run -a --server-args="-screen 0 1600x1000x24" npm run test:e2e 2>&1 | tee test-output/e2e.log
 
       - name: 保存测试截图和报告
         if: always()
@@ -50,6 +53,19 @@ jobs:
           name: test-output
           path: test-output/
           retention-days: 7
+
+      # 测试日志和截图同时放到 ci-results 分支，方便查看
+      - name: 上传测试结果到 ci-results 分支
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/res && cp -r test-output/. /tmp/res/ 2>/dev/null || true
+          echo "${GITHUB_REF_NAME} ${GITHUB_SHA}" > /tmp/res/RUN.txt
+          cd /tmp/res && git init -q && git checkout -q -b ci-results
+          git add -A && git -c user.name=ci -c user.email=ci@localhost commit -qm "测试结果 ${GITHUB_REF_NAME} ${GITHUB_SHA::7}"
+          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" ci-results
 
   build-windows:
     needs: test

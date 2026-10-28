@@ -232,6 +232,10 @@
     var m = v.match(NAME_STOP);
     if (m && m.index != null) v = v.slice(0, m.index);
     v = v.replace(/[\s]+/g, '').replace(/[|丨_]+$/, '');
+    // 文字识别带进来的标点和杂字：去掉开头的符号、公司名结尾后多出的一个字
+    v = v.replace(new RegExp('^[^' + CJK + '(（A-Za-z0-9]+'), '').replace(/[,.;:，。；、:'"“”‘’]/g, '');
+    var over = v.match(/^(.*(?:有限责任公司|股份有限公司|有限公司))[^（(]$/);
+    if (over) v = over[1];
     // 去掉粘在末尾的竖排标签字（购买方信息 / 销售方信息）
     var tail = v.match(new RegExp('^(.*' + NAME_SUFFIX.source + ')[购销买售方信息]{1,3}$'));
     if (tail) v = tail[1];

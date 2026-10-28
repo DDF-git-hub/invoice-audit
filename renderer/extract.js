@@ -164,6 +164,35 @@
 
   var TAX_ID_RE = /^([0-9A-HJ-NPQRTUWXY]{2}\d{6}[0-9A-HJ-NPQRTUWXY]{10}|[0-9A-Z]{15}|[0-9A-Z]{20})$/;
 
+  /* ---------- 统一社会信用代码（GB 32100）校验位 ---------- */
+  var USCC_CH = '0123456789ABCDEFGHJKLMNPQRTUWXY';
+  var USCC_W = [1, 3, 9, 27, 19, 26, 16, 17, 20, 29, 25, 13, 8, 24, 10, 30, 28];
+  function usccValid(id) {
+    if (!/^[0-9A-HJ-NPQRTUWXY]{18}$/.test(id)) return false;
+    var sum = 0;
+    for (var i = 0; i < 17; i++) sum += USCC_CH.indexOf(id[i]) * USCC_W[i];
+    var c = 31 - sum % 31;
+    return USCC_CH[c === 31 ? 0 : c] === id[17];
+  }
+  // OCR 常把 0/O、1/I、2/Z、5/S、8/B 认混。只在文字识别结果上使用：先换掉代码里不允许出现的字母，
+  // 再用校验位尝试修正一个字符；唯一能通过校验的结果才采用。
+  var CONFUSE = { '0': 'ODQ', 'O': '0', 'D': '0', 'Q': '0', '1': 'IL7T', 'I': '1', 'L': '1', '7': '1', 'T': '1', '2': 'Z', 'Z': '2', '5': 'S', 'S': '5', '8': 'B3', 'B': '8', '3': '8', '6': 'G', 'G': '6', 'U': 'V', 'V': 'U' };
+  function fixTaxId(id) {
+    id = String(id || '').toUpperCase().replace(/\s/g, '');
+    if (id.length !== 18) return { id: id, fixed: false };
+    var base = id.replace(/O/g, '0').replace(/I/g, '1').replace(/Z/g, '2').replace(/S/g, '5');
+    if (usccValid(base)) return { id: base, fixed: base !== id };
+    var hits = [];
+    for (var i = 0; i < 18; i++) {
+      var alts = CONFUSE[base[i]] || '';
+      for (var j = 0; j < alts.length; j++) {
+        var cand = base.slice(0, i) + alts[j] + base.slice(i + 1);
+        if (usccValid(cand) && hits.indexOf(cand) < 0) hits.push(cand);
+      }
+    }
+    return hits.length === 1 ? { id: hits[0], fixed: true } : { id: base, fixed: base !== id, invalid: true };
+  }
+
   /* ---------- 名称 ---------- */
   var NAME_STOP = /\t|\s{2,}|(?:[购销买售]{1,2}方?)?(?:名称|统一社会|纳税人|识别号|地址|电话|开户行|密码区|项目名称|货物或应税|规格型号)|$/;
   var NAME_SUFFIX = /(有限责任公司|股份有限公司|有限公司|分公司|公司|集团|厂|店|中心|医院|学校|研究院|研究所|事务所|局|馆|社|部|处|站|行|所)/;
@@ -185,7 +214,7 @@
   function findParties(rows) {
     var names = [], taxes = [];
     var T = rows.join('\n');
-    var nameRe = /名称:?/g, m;
+    var nameRe = /名\s*称\s*:?/g, m;
     while ((m = nameRe.exec(T))) {
       var before = T.slice(Math.max(0, m.index - 6), m.index);
       if (/项目|货物|服务|应税劳务/.test(before)) continue;
@@ -194,11 +223,11 @@
       var role = /销|售/.test(before) ? 'seller' : /购|买/.test(before) ? 'buyer' : '';
       names.push({ idx: m.index, role: role, value: cleanName(after) });
     }
-    var taxRe = /(?:纳税人识别号|信用代码)[^:\n0-9A-Z]{0,14}:?\s*([0-9A-Z]{15,20})?/g;
+    var taxRe = /(?:纳税人识别号|识别号|信用代码)[^:\n0-9A-Z]{0,14}:?\s*((?:[0-9A-Z] ?){15,20})?/g;
     while ((m = taxRe.exec(T))) {
       var b = T.slice(Math.max(0, m.index - 22), m.index);
       var rl = /销售方|销|售/.test(b.slice(-6)) ? 'seller' : /购买方|购|买/.test(b.slice(-6)) ? 'buyer' : '';
-      taxes.push({ idx: m.index, role: rl, value: (m[1] || '').trim() });
+      taxes.push({ idx: m.index, role: rl, value: (m[1] || '').replace(/\s/g, '').slice(0, 20) });
     }
     function assign(list, other) {
       var out = { buyer: null, seller: null };
@@ -219,14 +248,15 @@
 
   // 没有“名称”标签时，按公司名的样子在文字里找
   function companyNames(T) {
-    var re = new RegExp('[' + CJK + '()]{2,40}?(?:有限责任公司|股份有限公司|有限公司|分公司|集团|酒店|宾馆|饭店|餐厅|中心|医院)', 'g');
+    var re = new RegExp('[' + CJK + '()]{2,40}(?:有限责任公司|股份有限公司|有限公司|分公司|集团|酒店|宾馆|饭店|餐厅|中心|医院)', 'g');
     var out = [], m;
     while ((m = re.exec(T))) out.push(fullParens(m[0]));
     return out;
   }
 
   /* ---------- 文字 → 字段 ---------- */
-  function parseText(rawRows) {
+  function parseText(rawRows, opts) {
+    opts = opts || {};
     var rows = (rawRows || []).map(compact).filter(Boolean);
     var T = rows.join('\n');
     var flat = rows.join(' ');
@@ -304,6 +334,17 @@
     var items = [], ir = /\*[^*\s\d¥]{1,20}\*[^\s*¥\d%]{0,30}/g;
     while ((m = ir.exec(flat))) if (items.indexOf(m[0]) < 0) items.push(m[0]);
     if (items.length) f.items = items[0] + (items.length > 1 ? '等' : '');
+    if (!f.items) {
+      // 文字识别常把 * 认成别的符号：取表头下一行的第一栏，并还原成 *类别*名称 的格式
+      for (var ri = 0; ri < rows.length - 1; ri++) {
+        if (!/项目名称|货物或应税|服务名称/.test(rows[ri])) continue;
+        var cell = (rows[ri + 1].split('\t')[0] || '').replace(/[\d.%¥\s]+$/, '');
+        var mm = cell.match(new RegExp('^[^' + CJK + ']{0,2}([' + CJK + ']{2,12})[^' + CJK + ']{1,2}([' + CJK + '、]{1,30})'));
+        if (mm) f.items = '*' + mm[1] + '*' + mm[2];
+        else if (new RegExp('^[' + CJK + ']{2,30}$').test(cell)) f.items = cell;
+        break;
+      }
+    }
 
     if (isRail) {
       f.type = f.type || '电子发票（铁路电子客票）';
@@ -313,6 +354,15 @@
         f.amount = r2(f.total / (1 + f.rate / 100)); f.tax = r2(f.total - f.amount);
         notes.push('金额和税额按 ' + f.rate + '% 由票价换算');
       }
+    }
+
+    if (opts.ocr) {
+      ['buyerTax', 'sellerTax'].forEach(function (k) {
+        if (!f[k]) return;
+        var r = fixTaxId(f[k]);
+        if (r.fixed) notes.push((k === 'buyerTax' ? '购买方' : '销售方') + '税号按校验位修正了识别误差');
+        f[k] = r.id;
+      });
     }
 
     f.cat = inferCategory(f.items, f.seller, f.type);
@@ -397,8 +447,10 @@
     if (method === 'ocr') {
       if (!sumOk) c -= 0.12;
       if (res.qr && res.qr.ok) c += res.qr.mismatch.length ? -0.05 : 0.06;
-      if (f.sellerTax && !TAX_ID_RE.test(f.sellerTax)) c -= 0.08;
-      if (f.buyerTax && !TAX_ID_RE.test(f.buyerTax)) c -= 0.08;
+      ['sellerTax', 'buyerTax'].forEach(function (k) {
+        if (!f[k]) return;
+        if (f[k].length === 18 ? !usccValid(f[k]) : !TAX_ID_RE.test(f[k])) c -= 0.08;
+      });
       c = Math.min(c, 0.92);
     }
     res.missing = miss;
@@ -531,6 +583,6 @@
   return {
     CATS: CATS, norm: norm, compact: compact, buildRows: buildRows, rowsFromText: rowsFromText, rowsFromPdfItems: rowsFromPdfItems, rowsFromTsv: rowsFromTsv,
     parseText: parseText, parseQr: parseQr, applyQr: applyQr, snapBuyer: snapBuyer, score: score, looksReadable: looksReadable,
-    parseXml: parseXml, parseOfd: parseOfd, readZip: readZip, inferCategory: inferCategory, editDistance: editDistance, TAX_ID_RE: TAX_ID_RE
+    parseXml: parseXml, parseOfd: parseOfd, usccValid: usccValid, fixTaxId: fixTaxId, readZip: readZip, inferCategory: inferCategory, editDistance: editDistance, TAX_ID_RE: TAX_ID_RE
   };
 });

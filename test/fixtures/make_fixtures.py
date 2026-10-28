@@ -183,30 +183,30 @@ def rail(inv):
 
 
 BUYER = '上海示例科技有限公司'
-BUYER_TAX = '91310115MA1K4A2B3C'
+BUYER_TAX = '91310115MA1K4A2B3A'
 
 INVOICES = [
     dict(kind='sdp', id='sdp-canyin', title='电子发票（普通发票）', type='数电票（普通发票）', cat='餐饮',
          no='26312000000207718804', date='2026-10-22', buyer=BUYER, buyerTax=BUYER_TAX,
-         seller='上海小南国餐饮有限公司', sellerTax='91310101607412385X',
+         seller='上海小南国餐饮有限公司', sellerTax='913101016074123858',
          amount=1754.72, tax=105.28, total=1860.00, rate=6, items='*餐饮服务*餐费', drawer='张敏',
          rows=[dict(n='*餐饮服务*餐费', u='', q='1', p='1754.72', a='1754.72', r='6%', t='105.28')],
          qr='01,32,,26312000000207718804,1754.72,20261022,,8A3F'),
     dict(kind='sdp', id='sdp-zhuanpiao', title='电子发票（增值税专用发票）', type='数电票（专用发票）', cat='办公用品',
          no='26112000000310087642', date='2026-10-08', buyer=BUYER, buyerTax=BUYER_TAX,
-         seller='北京京东世纪贸易有限公司', sellerTax='91110302MA01B2C3D4',
+         seller='北京京东世纪贸易有限公司', sellerTax='91110302MA01B2C3DK',
          amount=1592.92, tax=207.08, total=1800.00, rate=13, items='*计算机外部设备*显示器', drawer='李华',
          rows=[dict(n='*计算机外部设备*显示器', u='台', q='2', p='796.46', a='1592.92', r='13%', t='207.08')],
          qr='01,31,,26112000000310087642,1592.92,20261008,,C41E'),
     dict(kind='sdp', id='sdp-geren', title='电子发票（普通发票）', type='数电票（普通发票）', cat='交通',
          no='26442000000091273518', date='2026-10-20', buyer='王磊', buyerTax='',
-         seller='滴滴出行科技有限公司', sellerTax='91120116MA05M8XX1K',
+         seller='滴滴出行科技有限公司', sellerTax='91120116MA05M8XX10',
          amount=83.98, tax=2.52, total=86.50, rate=3, items='*运输服务*客运服务费', drawer='系统',
          rows=[dict(n='*运输服务*客运服务费', u='次', q='1', p='83.98', a='83.98', r='3%', t='2.52')],
          qr='01,32,,26442000000091273518,83.98,20261020,,77D0'),
     dict(kind='old', id='old-zhusu', title='浙江增值税电子普通发票', type='增值税电子普通发票', cat='住宿',
          code='033002000111', no='38291746', date='2026-09-30', buyer=BUYER, buyerTax=BUYER_TAX,
-         seller='杭州西湖国宾馆有限公司', sellerTax='91330100143059876R',
+         seller='杭州西湖国宾馆有限公司', sellerTax='91330100143059876E',
          amount=528.30, tax=31.70, total=560.00, rate=6, items='*住宿服务*住宿费', drawer='陈晓',
          check='12345 67890 12345 67890',
          pwd=['03<*+2-/>9<6/>1*54+3<<0+8-/23', '/9>6-*1<+05>>7/2*35-6<0+71>49', '1<*7/0>-+2<8/96>-3*+15<0/>63', '+-2>*07/<69-1+>3<4/*8-05+7>12'],

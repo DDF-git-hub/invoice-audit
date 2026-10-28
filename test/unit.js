@@ -61,16 +61,17 @@ async function ocrTest(langDir, label) {
     const t1 = Date.now();
     const { data } = await worker.recognize(path.join(dir, name), {}, { text: true, tsv: true });
     const rows = data.tsv ? X.rowsFromTsv(data.tsv) : X.rowsFromText(data.text);
-    const res = X.parseText(rows);
+    const res = X.parseText(rows, { ocr: true });
     const q = X.parseQr(qrOf(path.join(dir, name)));
     if (q) X.applyQr(res, q);
-    X.snapBuyer(res, [{ name: '上海示例科技有限公司', taxId: '91310115MA1K4A2B3C' }]);
+    X.snapBuyer(res, [{ name: '上海示例科技有限公司', taxId: '91310115MA1K4A2B3A' }]);
     X.score(res, 'ocr');
     const e = exp[name], keys = KEYS.filter((k) => k in e);
     const bad = compare(res.f, e);
     total += keys.length; right += keys.length - bad.length;
     line(!bad.length, name, '字段 ' + (keys.length - bad.length) + '/' + keys.length + '，置信度 ' + res.conf + '，耗时 ' + ((Date.now() - t1) / 1000).toFixed(1) + 's' + (bad.length ? '\n      ' + fmtBad(bad) : ''));
-    if (process.env.OCR_DUMP) console.log('      ---- 识别文字 ----\n      ' + rows.join('\n      '));
+    fs.mkdirSync(path.join(__dirname, '..', 'test-output', 'ocr-text'), { recursive: true });
+    fs.writeFileSync(path.join(__dirname, '..', 'test-output', 'ocr-text', label + '__' + name + '.txt'), rows.map(X.compact).join('\n'));
     results.ocr.push({ model: label, file: name, ok: keys.length - bad.length, of: keys.length, bad });
   }
   await worker.terminate();

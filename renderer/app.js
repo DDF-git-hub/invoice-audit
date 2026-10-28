@@ -34,7 +34,7 @@ function defaultCfg(){
   var rules = {};
   RULES.forEach(function(r){ rules[r.id] = {on:true, lv:r.lv}; });
   return {
-    companies:[{name:'上海示例科技有限公司', taxId:'91310115MA1K4A2B3C'},{name:'示例科技（杭州）有限公司', taxId:'91330106MA2H7C4D5E'}],
+    companies:[{name:'上海示例科技有限公司', taxId:'91310115MA1K4A2B3A'},{name:'示例科技（杭州）有限公司', taxId:'91330106MA2H7C4D5E'}],
     limits:{'餐饮':{v:500,lv:'review'},'住宿':{v:600,lv:'review'},'交通':{v:300,lv:'review'},'办公用品':{v:2000,lv:'review'},'其他':{v:null,lv:'review'}},
     days:90, big:10000, rates:[0,1,3,5,6,9,13], rules:rules
   };
@@ -223,7 +223,7 @@ function reviewQueue(audits){
 
 /* ---------- 示例数据 ---------- */
 function makeSamples(){
-  var base = Date.now() - 60000, buyer = '上海示例科技有限公司', bt = '91310115MA1K4A2B3C';
+  var base = Date.now() - 60000, buyer = '上海示例科技有限公司', bt = '91310115MA1K4A2B3A';
   var S = [
     ['数电票（普通发票）','住宿','26312000000184620371',-14,buyer,bt,'上海锦江之星酒店管理有限公司','91310000132205678K',528.30,31.70,560.00,6,'*住宿服务*住宿费',0.97,'锦江之星_1013.pdf'],
     ['数电票（普通发票）','住宿','26312000000184620371',-14,buyer,bt,'上海锦江之星酒店管理有限公司','91310000132205678K',528.30,31.70,560.00,6,'*住宿服务*住宿费',0.96,'IMG_4790.jpg'],
@@ -453,7 +453,7 @@ function fromImage(inv, c, qrText, opts){
   }
   stage(inv, '文字识别 0%');
   return ocrRows(c, function(p){ stage(inv, '文字识别 ' + Math.round(p * 100) + '%'); }).then(function(rows){
-    var res = X.parseText(rows);
+    var res = X.parseText(rows, {ocr:true});
     var q = X.parseQr(qrText);
     if (q) X.applyQr(res, q);
     X.snapBuyer(res, cfg.companies);

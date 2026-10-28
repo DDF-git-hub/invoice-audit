@@ -526,7 +526,7 @@ function enqueue(files, metas){
   list.forEach(function(file, i){
     var inv = {id:uid() + i, createdAt:Date.now() + i, source:'file', file:file.name, status:'recognizing', stage:'排队中', conf:null, aiNotes:'', decision:null, memo:'', f:emptyFields()};
     var meta = metas && metas[i];
-    if (meta){ inv.source = 'mail'; inv.sender = meta.sender || ''; inv.senderName = meta.senderName || ''; inv.mail = meta.mail || null; }
+    if (meta){ inv.source = 'mail'; inv.sender = meta.sender || ''; inv.senderName = meta.senderName || ''; inv.employeeId = meta.employeeId || null; inv.mail = meta.mail || null; }
     invoices.unshift(inv); fileMap[inv.id] = file; queue.push({inv:inv});
   });
   save();
@@ -547,12 +547,14 @@ function pump(){
 }
 
 /* ---------- 路由与渲染 ---------- */
-var ui = {filter:'all', q:'', sender:'', confirmClear:false, confirmDel:false};
+var ui = {filter:'all', q:'', person:'', confirmClear:false, confirmDel:false};
 function route(){
   var h = (location.hash || '').replace(/^#/, '');
   if (h === 'rules') return {v:'rules'};
   if (h === 'ai') return {v:'ai'};
   if (h === 'mail') return {v:'mail'};
+  if (h === 'staff') return {v:'staff'};
+  if (h === 'history') return {v:'history'};
   if (h === 'review') return {v:'review'};
   var m = h.match(/^review-([A-Za-z0-9]+)$/);
   if (m) return {v:'review', id:m[1]};
@@ -565,6 +567,8 @@ function render(){
   if (r.v === 'rules') el.innerHTML = viewRules();
   else if (r.v === 'ai') el.innerHTML = viewAI();
   else if (r.v === 'mail') el.innerHTML = viewMail();
+  else if (r.v === 'staff') el.innerHTML = viewStaff();
+  else if (r.v === 'history') el.innerHTML = viewHistory();
   else if (r.v === 'review') el.innerHTML = viewReview(r.id);
   else el.innerHTML = viewLedger();
 }
@@ -603,19 +607,18 @@ function viewLedger(){
 
   var list = sortedList(A).filter(function(i){
     if (ui.filter !== 'all'){ if (i.status !== 'ready' || A[i.id].level !== ui.filter) return false; }
-    if (ui.sender && (ui.sender === '__none' ? !!i.sender : (i.sender || '') !== ui.sender)) return false;
-    if (ui.q){ var q = ui.q.toLowerCase(); return [i.f.no, i.f.seller, i.f.buyer, i.file, i.f.items, i.sender, i.senderName].join(' ').toLowerCase().indexOf(q) >= 0; }
+    if (ui.person && personKey(i) !== ui.person) return false;
+    if (ui.q){ var q = ui.q.toLowerCase(); return [i.f.no, i.f.seller, i.f.buyer, i.file, i.f.items, i.sender, i.senderName, personLabel(i)].join(' ').toLowerCase().indexOf(q) >= 0; }
     return true;
   });
 
   h += '<section class="card" aria-label="发票台账"><div class="filters">' +
     pill('all','全部', invoices.length) + pill('block','拦截', cnt.block) + pill('review','复核', cnt.review) + pill('pass','通过', cnt.pass) +
     (function(){
-      var ss = {}; invoices.forEach(function(i){ if (i.sender) ss[i.sender] = senderLabel(i); });
-      var keys = Object.keys(ss);
-      if (!keys.length) return '';
-      return '<label class="sr" for="sender-filter">提交人</label><select id="sender-filter" class="inp" style="width:auto;height:34px;border-radius:17px"><option value="">全部提交人</option>' +
-        keys.sort().map(function(k){ return '<option value="' + esc(k) + '"' + (ui.sender === k ? ' selected' : '') + '>' + esc(ss[k] + '（' + k + '）') + '</option>'; }).join('') + '<option value="__none"' + (ui.sender === '__none' ? ' selected' : '') + '>手动上传的</option></select>';
+      var G = personGroups(invoices.filter(function(i){ return i.status !== 'recognizing'; }));
+      if (!G.length || (G.length === 1 && G[0].kind === 2 && !emps().length)) return '';
+      return '<label class="sr" for="person-filter">报销人</label><select id="person-filter" class="inp" style="width:auto;height:34px;border-radius:17px"><option value="">全部报销人</option>' +
+        G.map(function(g){ return '<option value="' + esc(g.key) + '"' + (ui.person === g.key ? ' selected' : '') + '>' + esc(g.label + (g.kind === 1 ? '（未登记）' : '')) + ' · ' + g.n + '</option>'; }).join('') + '</select>';
     })() +
     '<label class="search" for="q"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input id="q" placeholder="搜索发票号、销售方、文件名" value="' + esc(ui.q) + '"></label></div>';
 
@@ -624,7 +627,7 @@ function viewLedger(){
   } else if (!list.length){
     h += '<div class="empty">没有符合条件的发票</div>';
   } else {
-    h += '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>风险</th><th>发票号码</th><th>开票日期</th><th>提交人</th><th>销售方</th><th>类别</th><th class="num">价税合计</th><th>审核发现</th></tr></thead><tbody>';
+    h += '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>风险</th><th>发票号码</th><th>开票日期</th><th>报销人</th><th>销售方</th><th>类别</th><th class="num">价税合计</th><th>审核发现</th></tr></thead><tbody>';
     list.forEach(function(i){
       var au = A[i.id], issue;
       if (i.status === 'recognizing') issue = '<span class="muted">' + esc(i.file) + (i.stage ? ' · ' + esc(i.stage) : '') + '</span>';
@@ -634,7 +637,7 @@ function viewLedger(){
         '<td>' + chip(i, au) + (i.decision ? '<span class="decision">' + DEC[i.decision] + '</span>' : '') + '</td>' +
         '<td class="mono nowrap" style="font-size:12px">' + esc(i.f.no || '—') + (i.source === 'sample' ? ' <span class="chip sample">示例</span>' : '') + '</td>' +
         '<td class="mono nowrap" style="font-size:12px">' + esc(i.f.date || '—') + '</td>' +
-        '<td class="nowrap"' + (i.sender ? ' title="' + esc(i.sender) + '"' : '') + '>' + (i.sender ? esc(senderLabel(i)) : '<span class="muted">—</span>') + '</td>' +
+        '<td class="nowrap"' + (i.sender ? ' title="' + esc(i.sender) + '"' : '') + '>' + (personLabel(i) ? esc(personLabel(i)) + (i.sender && !employeeOf(i) ? ' <span class="muted" style="font-size:11px">未登记</span>' : '') : '<span class="muted">—</span>') + '</td>' +
         '<td>' + esc(i.f.seller || '—') + '</td>' +
         '<td class="muted nowrap">' + esc(i.status === 'ready' ? i.f.cat : '—') + '</td>' +
         '<td class="num mono">' + fmt(num(i.f.total)) + '</td>' +
@@ -698,7 +701,11 @@ function viewReview(id){
     (fileMap[inv.id] ? '<div class="actions"><button class="btn sm" type="button" data-act="retry" data-id="' + inv.id + '"' + (inv.status === 'recognizing' ? ' disabled' : '') + '>重新识别</button>' +
       (aiState === 'on' && inv.method !== 'ai' ? '<button class="btn sm" type="button" data-act="retry-ai" data-id="' + inv.id + '"' + (inv.status === 'recognizing' ? ' disabled' : '') + '>用 AI 重新识别</button>' : '') +
       (aiState !== 'on' && inv.method === 'ocr' ? '<a class="btn sm" href="#ai">开启 AI 识别更准</a>' : '') + '</div>' : '') + '</section>';
+  var curEmp = employeeOf(inv);
   h += '<section class="card pad stack" aria-label="复核处理">' +
+    '<label class="fld" for="rv-emp">报销人<select id="rv-emp" data-id="' + inv.id + '"><option value="">' + (inv.sender ? '未登记（' + esc(inv.sender) + '）' : '未指定') + '</option>' +
+      emps().slice().sort(function(a, b){ return byName(a.name, b.name); }).map(function(e){ return '<option value="' + e.id + '"' + (curEmp && curEmp.id === e.id ? ' selected' : '') + '>' + esc(e.name + (e.dept ? '（' + e.dept + '）' : '')) + '</option>'; }).join('') + '</select></label>' +
+    (inv.sender && !curEmp ? '<span class="sub">这个邮箱还没登记，可以在上面直接选员工，或者到 <a href="#staff">员工</a> 页把邮箱登记到员工名下。</span>' : '') +
     '<label class="fld" for="memo">复核意见<textarea id="memo" rows="3" data-id="' + inv.id + '" placeholder="例如：已确认为 8 人客户招待，人均未超标，同意报销">' + esc(inv.memo) + '</textarea></label>' +
     '<div class="actions"><button class="btn lg danger" type="button" data-dec="rejected" data-id="' + inv.id + '">驳回</button><button class="btn lg" type="button" data-dec="returned" data-id="' + inv.id + '">退回补充说明</button>' +
     '<button class="btn lg primary grow" type="button" data-dec="approved" data-id="' + inv.id + '"' + (inv.status !== 'ready' ? ' disabled' : '') + '>人工通过</button></div>' +
@@ -823,9 +830,213 @@ function saveAIForm(f){
   });
 }
 
+/* ---------- 员工（一个人可以有多个邮箱） ---------- */
+function emps(){ if (!cfg.employees) cfg.employees = []; return cfg.employees; }
+function empById(id){ return emps().filter(function(e){ return e.id === id; })[0] || null; }
+function empByEmail(addr){ addr = String(addr || '').toLowerCase(); return addr ? emps().filter(function(e){ return (e.emails || []).indexOf(addr) >= 0; })[0] || null : null; }
+function employeeOf(inv){ return (inv.employeeId && empById(inv.employeeId)) || (inv.sender ? empByEmail(inv.sender) : null); }
+function personKey(inv){ var e = employeeOf(inv); return e ? 'emp:' + e.id : inv.sender ? 'mail:' + inv.sender : 'none'; }
+function personLabel(inv){ var e = employeeOf(inv); return e ? e.name : (inv.sender ? senderLabel(inv) : ''); }
+function byName(a, b){ return String(a).localeCompare(String(b), 'zh-CN'); }
+// 按报销人分组：已登记员工 → 未登记的发件邮箱 → 手动上传未指定
+function personGroups(list){
+  var g = {};
+  list.forEach(function(i){
+    var k = personKey(i);
+    if (!g[k]){
+      var e = employeeOf(i);
+      g[k] = {key:k, n:0, kind: e ? 0 : i.sender ? 1 : 2,
+        label: e ? e.name : i.sender ? senderLabel(i) : '手动上传（未指定报销人）',
+        sub: e ? (e.dept || '') : i.sender || ''};
+    }
+    g[k].n++;
+  });
+  return Object.keys(g).map(function(k){ return g[k]; }).sort(function(a, b){ return a.kind - b.kind || byName(a.label, b.label); });
+}
+function subDate(inv){ var d = inv.mail && inv.mail.date ? new Date(inv.mail.date) : new Date(inv.createdAt); return isNaN(d) ? new Date(inv.createdAt) : d; }
+function dayOf(d){ return d.getFullYear() + '-' + ('0'+(d.getMonth()+1)).slice(-2) + '-' + ('0'+d.getDate()).slice(-2); }
+
+var staffUi = {editId:null, draft:null, error:'', confirmDel:null};
+function staffDraft(){ return staffUi.draft || {name:'', dept:'', emails:''}; }
+function viewStaff(){
+  var list = emps().slice().sort(function(a, b){ return byName(a.name, b.name); });
+  var d = staffDraft(), editing = staffUi.editId ? empById(staffUi.editId) : null;
+  var counts = {};
+  invoices.forEach(function(i){ var e = employeeOf(i); if (e) counts[e.id] = (counts[e.id] || 0) + 1; });
+  var h = '<div class="rl-head"><div class="stack" style="gap:4px"><h1>员工与邮箱</h1><span class="muted" style="font-size:13px">登记每个员工报销时会用的邮箱，一个人可以登记多个。收票时选员工，就会读取他所有邮箱发来的发票；台账、查询、导出也都按员工归类。</span></div></div>';
+  h += '<div class="cols"><section class="card pad stack" style="flex:1 1 360px;min-width:0" aria-label="登记员工"><h2 class="h">' + (editing ? '修改：' + esc(editing.name) : '登记员工') + '</h2>' +
+    '<label class="fld" for="st-name">姓名<input id="st-name" value="' + esc(d.name) + '" placeholder="例如 张三"></label>' +
+    '<label class="fld" for="st-dept">部门（可不填）<input id="st-dept" value="' + esc(d.dept) + '" placeholder="例如 市场部"></label>' +
+    '<label class="fld" for="st-emails">邮箱（可以填多个，每行一个或用逗号隔开）<textarea id="st-emails" rows="4" class="mono" placeholder="zhangsan@company.com&#10;12345678@qq.com">' + esc(d.emails) + '</textarea></label>' +
+    (staffUi.error ? '<div class="errbox" role="alert">' + esc(staffUi.error) + '</div>' : '') +
+    '<div class="actions"><button class="btn lg primary" type="button" data-act="st-save">' + (editing ? '保存修改' : '添加员工') + '</button>' + (editing || d.name || d.emails ? '<button class="btn lg" type="button" data-act="st-cancel">取消</button>' : '') + '</div></section>';
+  h += '<section class="card" style="flex:999 1 560px;min-width:0" aria-label="员工列表"><div class="filters"><b>已登记 ' + list.length + ' 人</b></div>';
+  if (!list.length) h += '<div class="empty">还没有登记员工。在左边填姓名和邮箱，点「添加员工」。</div>';
+  else {
+    h += '<div class="tbl-wrap"><table class="tbl" style="min-width:560px"><thead><tr><th>姓名</th><th>部门</th><th>邮箱</th><th class="num">发票</th><th></th></tr></thead><tbody>';
+    list.forEach(function(e){
+      h += '<tr><td class="nowrap"><b>' + esc(e.name) + '</b></td><td class="muted nowrap">' + esc(e.dept || '—') + '</td><td><div style="display:flex;gap:4px;flex-wrap:wrap">' +
+        (e.emails || []).map(function(m){ return '<span class="chip idle mono" style="font-weight:400">' + esc(m) + '</span>'; }).join('') + '</div></td>' +
+        '<td class="num mono">' + (counts[e.id] ? '<a href="#history" data-act="st-hist" data-id="' + e.id + '">' + counts[e.id] + ' 张</a>' : '0') + '</td><td class="nowrap" style="text-align:right">' +
+        (staffUi.confirmDel === e.id ? '<button class="linkbtn" style="color:var(--block)" type="button" data-act="st-del-yes" data-id="' + e.id + '">确认删除</button> <button class="linkbtn muted" type="button" data-act="st-del-no">取消</button>'
+          : '<button class="linkbtn" type="button" data-act="st-edit" data-id="' + e.id + '">修改</button> <button class="linkbtn muted" type="button" data-act="st-del" data-id="' + e.id + '">删除</button>') + '</td></tr>';
+    });
+    h += '</tbody></table></div>';
+  }
+  h += '</section></div>';
+  // 收到过、但还没登记的发件邮箱
+  var unknown = {};
+  invoices.forEach(function(i){ if (i.sender && !employeeOf(i)){ unknown[i.sender] = unknown[i.sender] || {name:i.senderName || '', n:0}; unknown[i.sender].n++; } });
+  var uk = Object.keys(unknown).sort();
+  if (uk.length){
+    h += '<section class="card" aria-label="未登记的发件人"><div class="filters"><b>还没登记的发件人</b><span class="muted" style="font-size:12px">这些邮箱发来过发票，登记到员工名下后，发票会自动归到这个员工</span></div><div class="tbl-wrap"><table class="tbl" style="min-width:560px"><tbody>';
+    uk.forEach(function(m){
+      h += '<tr><td class="mono">' + esc(m) + '</td><td class="muted">' + esc(unknown[m].name) + '</td><td class="num mono">' + unknown[m].n + ' 张</td><td class="nowrap" style="text-align:right">' +
+        '<button class="linkbtn" type="button" data-act="st-new-from" data-email="' + esc(m) + '" data-name="' + esc(unknown[m].name) + '">新建员工</button>' +
+        (list.length ? ' <select class="inp" style="width:auto;height:30px;display:inline-block" aria-label="加到员工" data-addto="' + esc(m) + '"><option value="">加到已有员工…</option>' + list.map(function(e){ return '<option value="' + e.id + '">' + esc(e.name) + '</option>'; }).join('') + '</select>' : '') + '</td></tr>';
+    });
+    h += '</tbody></table></div></section>';
+  }
+  return h;
+}
+function staffSave(){
+  var name = $('#st-name').value.trim(), dept = $('#st-dept').value.trim(), raw = $('#st-emails').value;
+  var emails = parseSenders(raw);
+  staffUi.draft = {name:name, dept:dept, emails:raw};
+  if (!name){ staffUi.error = '请填写姓名'; render(); return; }
+  var bad = String(raw).split(/[\s,，;；、]+/).filter(function(x){ return x.trim() && parseSenders(x).length === 0; });
+  if (bad.length){ staffUi.error = '这些不是有效的邮箱：' + bad.join('、'); render(); return; }
+  if (!emails.length){ staffUi.error = '请至少填一个邮箱'; render(); return; }
+  var me = staffUi.editId;
+  var dupName = emps().filter(function(e){ return e.id !== me && e.name === name; })[0];
+  if (dupName){ staffUi.error = '已经有一个叫「' + name + '」的员工，同名的请加上部门或编号区分，比如「' + name + '（' + (dept || '市场部') + '）」'; render(); return; }
+  for (var i = 0; i < emails.length; i++){
+    var o = empByEmail(emails[i]);
+    if (o && o.id !== me){ staffUi.error = emails[i] + ' 已经登记给「' + o.name + '」了，一个邮箱只能属于一个人'; render(); return; }
+  }
+  if (me){ var e = empById(me); e.name = name; e.dept = dept; e.emails = emails; toast('已保存「' + name + '」'); }
+  else { emps().push({id:'e' + uid(), name:name, dept:dept, emails:emails, createdAt:Date.now()}); toast('已添加「' + name + '」，' + emails.length + ' 个邮箱'); }
+  staffUi = {editId:null, draft:null, error:'', confirmDel:null};
+  save(); render();
+}
+function staffAction(act, t){
+  var id = t.getAttribute('data-id');
+  if (act === 'st-save'){ staffSave(); return; }
+  if (act === 'st-cancel'){ staffUi = {editId:null, draft:null, error:'', confirmDel:null}; render(); return; }
+  if (act === 'st-edit'){ var e = empById(id); staffUi = {editId:id, draft:{name:e.name, dept:e.dept || '', emails:(e.emails || []).join('\n')}, error:'', confirmDel:null}; render(); window.scrollTo(0, 0); $('#st-name').focus(); return; }
+  if (act === 'st-del'){ staffUi.confirmDel = id; render(); return; }
+  if (act === 'st-del-no'){ staffUi.confirmDel = null; render(); return; }
+  if (act === 'st-del-yes'){
+    var ex = empById(id);
+    cfg.employees = emps().filter(function(e){ return e.id !== id; });
+    invoices.forEach(function(i){ if (i.employeeId === id) i.employeeId = null; });
+    staffUi.confirmDel = null; save(); render(); toast('已删除「' + (ex ? ex.name : '') + '」，他的发票还在台账里');
+    return;
+  }
+  if (act === 'st-new-from'){
+    staffUi = {editId:null, draft:{name:t.getAttribute('data-name') || '', dept:'', emails:t.getAttribute('data-email')}, error:'', confirmDel:null};
+    render(); window.scrollTo(0, 0); $('#st-name').focus(); return;
+  }
+  if (act === 'st-hist'){ var em = empById(id); histUi.who = em ? em.name : ''; return; }
+}
+
+/* ---------- 报销查询 ---------- */
+var histUi = {who:'', from:'', to:'', dateType:'submit', status:'all'};
+var HIST_STATUS = [['all','全部'],['ok','已通过（自动通过、人工通过）'],['todo','待处理'],['rejected','已驳回'],['returned','已退回补充说明']];
+function histMatches(){
+  var A = auditAll(), q = histUi.who.trim().toLowerCase();
+  var list = invoices.filter(function(i){
+    if (i.status === 'recognizing') return false;
+    if (q){
+      var e = employeeOf(i), hay = [personLabel(i), i.sender, e ? (e.emails || []).join(' ') : '', e ? e.dept : ''].join(' ').toLowerCase();
+      if (personLabel(i).toLowerCase() !== q && hay.indexOf(q) < 0) return false;
+    }
+    var day = histUi.dateType === 'invoice' ? (i.f.date || '') : dayOf(subDate(i));
+    if (histUi.from && (!day || day < histUi.from)) return false;
+    if (histUi.to && (!day || day > histUi.to)) return false;
+    if (histUi.status !== 'all'){
+      var lv = i.status === 'ready' ? A[i.id].level : 'review';
+      if (histUi.status === 'ok' && !(lv === 'pass' && !i.decision || i.decision === 'approved')) return false;
+      if (histUi.status === 'todo' && !(lv !== 'pass' && !i.decision)) return false;
+      if ((histUi.status === 'rejected' || histUi.status === 'returned') && i.decision !== histUi.status) return false;
+    }
+    return true;
+  });
+  list.sort(function(a, b){ return (histUi.dateType === 'invoice' ? String(b.f.date).localeCompare(String(a.f.date)) : 0) || subDate(b) - subDate(a); });
+  return {A:A, list:list};
+}
+function statusChip(i, A){
+  if (i.status !== 'ready') return '<span class="chip block">识别失败</span>';
+  if (i.decision === 'approved') return '<span class="chip pass">人工通过</span>';
+  if (i.decision === 'rejected') return '<span class="chip block">已驳回</span>';
+  if (i.decision === 'returned') return '<span class="chip review">已退回</span>';
+  var lv = A[i.id].level;
+  return lv === 'pass' ? '<span class="chip pass">● 自动通过</span>' : '<span class="chip ' + lv + '">' + LV[lv].i + ' 待处理（' + LV[lv].t + '）</span>';
+}
+function histResults(){
+  var R = histMatches(), A = R.A, list = R.list;
+  if (!invoices.length) return '<div class="card"><div class="empty">台账里还没有发票</div></div>';
+  var sum = 0, cnt = {ok:0, todo:0, no:0};
+  list.forEach(function(i){
+    sum += num(i.f.total) || 0;
+    if (i.decision === 'approved' || i.status === 'ready' && A[i.id].level === 'pass' && !i.decision) cnt.ok++;
+    else if (i.decision === 'rejected' || i.decision === 'returned') cnt.no++;
+    else cnt.todo++;
+  });
+  var who = histUi.who.trim();
+  var h = '<section class="card" aria-label="查询结果"><div class="filters" style="justify-content:space-between"><div><b>' + esc(who || '全部报销人') + '</b> <span class="muted">' + list.length + ' 张，价税合计 <span class="mono">' + fmt(r2(sum)) + '</span>' +
+    (list.length ? '（通过 ' + cnt.ok + '，待处理 ' + cnt.todo + '，驳回或退回 ' + cnt.no + '）' : '') + '</span></div>' +
+    (list.length ? '<button class="btn sm" type="button" data-act="hist-export">导出查询结果</button>' : '') + '</div>';
+  if (!list.length) return h + '<div class="empty">没有符合条件的报销记录。可以放宽日期范围，或者检查姓名有没有写错。</div></section>';
+  var groups = [], cur = null;
+  list.forEach(function(i){
+    var day = histUi.dateType === 'invoice' ? (i.f.date || '日期未识别') : dayOf(subDate(i));
+    if (!cur || cur.day !== day){ cur = {day:day, items:[], sum:0}; groups.push(cur); }
+    cur.items.push(i); cur.sum += num(i.f.total) || 0;
+  });
+  h += '<div class="tbl-wrap"><table class="tbl" style="min-width:900px"><thead><tr><th>' + (histUi.dateType === 'invoice' ? '开票日期' : '提交时间') + '</th><th>报销人</th><th>发票号码</th><th>销售方</th><th>项目</th><th class="num">价税合计</th><th>状态</th><th>来源</th></tr></thead><tbody>';
+  groups.forEach(function(g){
+    h += '<tr class="dayrow"><td colspan="8"><b class="mono">' + esc(g.day) + '</b> <span class="muted">' + g.items.length + ' 张 · ' + fmt(r2(g.sum)) + '</span></td></tr>';
+    g.items.forEach(function(i){
+      var d = subDate(i);
+      h += '<tr data-open="' + i.id + '" tabindex="0"><td class="mono nowrap" style="font-size:12px">' + (histUi.dateType === 'invoice' ? esc(dayOf(d)) + ' 提交' : ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2)) + '</td>' +
+        '<td class="nowrap">' + esc(personLabel(i) || '—') + '</td><td class="mono nowrap" style="font-size:12px">' + esc(i.f.no || '—') + '</td><td>' + esc(i.f.seller || '—') + '</td><td class="muted">' + esc(i.f.items || '') + '</td>' +
+        '<td class="num mono">' + fmt(num(i.f.total)) + '</td><td>' + statusChip(i, A) + (i.memo ? '<span class="decision" style="white-space:normal">' + esc(i.memo) + '</span>' : '') + '</td>' +
+        '<td class="muted" style="font-size:12px">' + esc(i.mail && i.mail.subject ? '邮件：' + i.mail.subject : i.file || (i.source === 'manual' ? '手动录入' : '')) + '</td></tr>';
+    });
+  });
+  return h + '</tbody></table></div><div class="tbl-foot"><span>点一行查看发票和审核结果</span></div></section>';
+}
+function viewHistory(){
+  var names = {};
+  emps().forEach(function(e){ names[e.name] = e.dept || ''; });
+  invoices.forEach(function(i){ var l = personLabel(i); if (l && !(l in names)) names[l] = i.sender || ''; });
+  var h = '<div class="rl-head"><div class="stack" style="gap:4px"><h1>报销查询</h1><span class="muted" style="font-size:13px">输入或选择报销人，选日期范围，查看他在这段时间的全部报销记录。</span></div></div>';
+  h += '<section class="card pad stack" aria-label="查询条件"><div class="hist-grid">' +
+    '<label class="fld" for="hist-who">报销人<input id="hist-who" list="hist-names" autocomplete="off" value="' + esc(histUi.who) + '" placeholder="输入姓名或邮箱，留空查全部"><datalist id="hist-names">' +
+      Object.keys(names).sort(byName).map(function(n){ return '<option value="' + esc(n) + '">' + esc(names[n]) + '</option>'; }).join('') + '</datalist></label>' +
+    '<label class="fld" for="hist-type">按哪个日期<select id="hist-type"><option value="submit"' + (histUi.dateType === 'submit' ? ' selected' : '') + '>提交日期（收到邮件或上传的日期）</option><option value="invoice"' + (histUi.dateType === 'invoice' ? ' selected' : '') + '>开票日期</option></select></label>' +
+    '<label class="fld" for="hist-from">从<input id="hist-from" type="date" value="' + esc(histUi.from) + '"></label>' +
+    '<label class="fld" for="hist-to">到<input id="hist-to" type="date" value="' + esc(histUi.to) + '"></label>' +
+    '<label class="fld" for="hist-status">状态<select id="hist-status">' + HIST_STATUS.map(function(o){ return '<option value="' + o[0] + '"' + (histUi.status === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></label>' +
+    '</div><div class="actions" style="gap:6px"><span class="sub">快速选择：</span>' + [['today','今天'],['week','最近 7 天'],['month','本月'],['lastmonth','上个月'],['year','今年'],['any','不限日期']].map(function(o){ return '<button class="pill" type="button" data-act="hist-range" data-r="' + o[0] + '">' + o[1] + '</button>'; }).join('') + '</div></section>';
+  return h + '<div id="hist-results">' + histResults() + '</div>';
+}
+function histRange(r){
+  var t = new Date(); t.setHours(0,0,0,0);
+  var from = new Date(t), to = new Date(t);
+  if (r === 'week') from.setDate(t.getDate() - 6);
+  else if (r === 'month') from.setDate(1);
+  else if (r === 'lastmonth'){ from = new Date(t.getFullYear(), t.getMonth() - 1, 1); to = new Date(t.getFullYear(), t.getMonth(), 0); }
+  else if (r === 'year') from = new Date(t.getFullYear(), 0, 1);
+  histUi.from = r === 'any' ? '' : dayOf(from); histUi.to = r === 'any' ? '' : dayOf(to);
+  render();
+}
+function histRefresh(){ var el = $('#hist-results'); if (el) el.innerHTML = histResults(); }
+
 /* ---------- 邮箱收票 ---------- */
 var mailInfo = null;
-var mailUi = {editing:false, draft:null, passDraft:'', status:null, testing:false, senders:'', days:'30', scanning:false, progress:'', result:null, sel:{}, error:'', importing:false};
+var mailUi = {empSel:{}, scanLabel:'', editing:false, draft:null, passDraft:'', status:null, testing:false, senders:'', days:'30', scanning:false, progress:'', result:null, sel:{}, error:'', importing:false};
 function loadMailInfo(){ return window.api.mailGet().then(function(r){ if (r && r.ok) mailInfo = r.data; }); }
 function mailReady(){ return mailInfo && mailInfo.user && mailInfo.hasPass; }
 function parseSenders(s){
@@ -866,9 +1077,17 @@ function viewMail(){
   }
   var pname = ((info.presets || {})[info.preset] || {}).name || '';
   h += '<div class="card pad" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><span>收票邮箱：<b class="mono">' + esc(info.user) + '</b></span><span class="muted">' + esc(pname) + '</span><button class="linkbtn grow" type="button" data-act="mail-edit">修改设置</button></div>';
-  var recent = (cfg.recentSenders || []).slice(0, 12);
+  var recent = (cfg.recentSenders || []).filter(function(m){ return !empByEmail(m); }).slice(0, 12);
   h += '<section class="card pad stack" aria-label="检查邮件"><div class="fgrid">' +
-    '<label class="fld wide" for="mail-senders">发件人邮箱<input id="mail-senders" class="mono" autocomplete="off" value="' + esc(mailUi.senders) + '" placeholder="例如 zhangsan@company.com，可以填几个，用逗号隔开"></label>' +
+    (function(){
+      var E = emps().slice().sort(function(a, b){ return byName(a.name, b.name); });
+      var allOn = E.length && E.every(function(e){ return mailUi.empSel[e.id]; });
+      return '<div class="wide stack" style="gap:8px"><span class="sub">选择员工（会读取他登记的所有邮箱）</span>' +
+        (E.length ? '<div style="display:flex;gap:6px;flex-wrap:wrap"><button type="button" class="pill emp' + (allOn ? ' on' : '') + '" data-act="mail-allemps" aria-pressed="' + !!allOn + '">全部员工</button>' +
+          E.map(function(e){ return '<button type="button" class="pill emp' + (mailUi.empSel[e.id] ? ' on' : '') + '" data-act="mail-emp" data-id="' + e.id + '" aria-pressed="' + !!mailUi.empSel[e.id] + '">' + esc(e.name) + ' <span class="muted" style="font-size:12px">' + (e.emails || []).length + ' 个邮箱</span></button>'; }).join('') + '</div>'
+          : '<span class="muted" style="font-size:13px">还没有登记员工。<a href="#staff">到员工页登记</a>后，这里点名字就能收他所有邮箱的发票；也可以直接在下面填邮箱。</span>') + '</div>';
+    })() +
+    '<label class="fld wide" for="mail-senders">' + (emps().length ? '其他邮箱（可不填）' : '发件人邮箱') + '<input id="mail-senders" class="mono" autocomplete="off" value="' + esc(mailUi.senders) + '" placeholder="例如 zhangsan@company.com，可以填几个，用逗号隔开"></label>' +
     (recent.length ? '<div class="wide" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"><span class="sub">最近用过：</span>' + recent.map(function(s){ return '<button type="button" class="pill" data-sender="' + esc(s) + '">' + esc(s) + '</button>'; }).join('') + '</div>' : '') +
     '<label class="fld" for="mail-days">时间范围<select id="mail-days">' + [['7','最近 7 天'],['30','最近 30 天'],['90','最近 3 个月'],['180','最近半年'],['365','最近一年']].map(function(o){ return '<option value="' + o[0] + '"' + (mailUi.days === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></label>' +
     '</div><div class="actions"><button class="btn lg primary" type="button" data-act="mail-scan"' + (mailUi.scanning ? ' disabled' : '') + '>' + (mailUi.scanning ? '<span class="spin"></span>正在检查…' : '检查邮件') + '</button>' +
@@ -880,11 +1099,12 @@ function viewMail(){
   if (R){
     var nFiles = 0, nSeen = 0, nSel = 0;
     R.messages.forEach(function(m){ m.files.forEach(function(f){ nFiles++; if (f.seen) nSeen++; if (mailUi.sel[f.id]) nSel++; }); });
-    h += '<section class="card" aria-label="邮件清单"><div class="filters" style="justify-content:space-between"><div><b>' + esc(R.senders.join('、')) + '</b> <span class="muted">最近 ' + R.days + ' 天：' + R.messages.length + ' 封邮件，' + nFiles + ' 个发票文件' + (nSeen ? '（' + nSeen + ' 个已导入过）' : '') + '</span></div>' +
+    h += '<section class="card" aria-label="邮件清单"><div class="filters" style="justify-content:space-between"><div><b>' + esc(mailUi.scanLabel || R.senders.join('、')) + '</b> <span class="muted">最近 ' + R.days + ' 天：' + R.messages.length + ' 封邮件，' + nFiles + ' 个发票文件' + (nSeen ? '（' + nSeen + ' 个已导入过）' : '') + '</span></div>' +
       (nFiles ? '<div class="actions"><button class="linkbtn" type="button" data-act="mail-all">全选</button><button class="linkbtn muted" type="button" data-act="mail-none">全不选</button></div>' : '') + '</div>';
     if (!R.messages.length) h += '<div class="empty">没有找到这些发件人在最近 ' + R.days + ' 天发来的邮件。可以换个时间范围，或者确认发件人邮箱有没有写错。</div>';
     R.messages.forEach(function(m){
-      h += '<div class="mailmsg"><div class="mailhead"><span><b>' + esc(m.fromName || m.from) + '</b>' + (m.fromName ? ' <span class="muted mono" style="font-size:12px">' + esc(m.from) + '</span>' : '') + '</span><span class="muted mono" style="font-size:12px">' + esc(fmtDateTime(m.date)) + '</span></div>' +
+      var me = empByEmail(m.from);
+      h += '<div class="mailmsg"><div class="mailhead"><span><b>' + esc(me ? me.name : (m.fromName || m.from)) + '</b> <span class="muted mono" style="font-size:12px">' + esc(m.from) + '</span></span><span class="muted mono" style="font-size:12px">' + esc(fmtDateTime(m.date)) + '</span></div>' +
         '<div class="mailsubj">' + esc(m.subject) + '</div>';
       if (!m.files.length && !m.links.length) h += '<div class="muted" style="font-size:12px">这封邮件里没有发票文件</div>';
       m.files.forEach(function(f){
@@ -925,19 +1145,24 @@ function mailAction(act, t){
   }
   if (act === 'mail-scan'){
     var input = $('#mail-senders'); if (input) mailUi.senders = input.value;
-    var senders = parseSenders(mailUi.senders);
-    if (!senders.length){ mailUi.error = '请填写发件人邮箱，例如 zhangsan@company.com'; render(); return true; }
+    var manual = parseSenders(mailUi.senders), senders = [], names = [];
+    emps().forEach(function(e){ if (mailUi.empSel[e.id]){ names.push(e.name); (e.emails || []).forEach(function(m){ if (senders.indexOf(m) < 0) senders.push(m); }); } });
+    manual.forEach(function(m){ if (senders.indexOf(m) < 0) senders.push(m); });
+    if (!senders.length){ mailUi.error = emps().length ? '请选择员工，或者填写发件人邮箱' : '请填写发件人邮箱，例如 zhangsan@company.com'; render(); return true; }
+    mailUi.scanLabel = names.concat(manual.filter(function(m){ return !empByEmail(m); })).join('、');
     mailUi.days = ($('#mail-days') || {}).value || mailUi.days;
     mailUi.scanning = true; mailUi.error = ''; mailUi.progress = '正在连接邮箱'; mailUi.result = null; mailUi.sel = {}; render();
     window.api.mailScan({senders:senders, days:Number(mailUi.days)}).then(function(r){
       if (!r || !r.ok){ mailUi.error = (r && r.message) || '检查邮件失败'; return; }
       mailUi.result = r.data;
       r.data.messages.forEach(function(m){ m.files.forEach(function(f){ if (!f.seen) mailUi.sel[f.id] = true; }); });
-      cfg.recentSenders = senders.concat((cfg.recentSenders || []).filter(function(s){ return senders.indexOf(s) < 0; })).slice(0, 12);
+      cfg.recentSenders = manual.concat((cfg.recentSenders || []).filter(function(s){ return manual.indexOf(s) < 0; })).slice(0, 12);
       save();
     }).then(function(){ mailUi.scanning = false; render(); });
     return true;
   }
+  if (act === 'mail-emp'){ var eid = t.getAttribute('data-id'); if (mailUi.empSel[eid]) delete mailUi.empSel[eid]; else mailUi.empSel[eid] = true; render(); return true; }
+  if (act === 'mail-allemps'){ var E = emps(), on = E.length && E.every(function(e){ return mailUi.empSel[e.id]; }); mailUi.empSel = {}; if (!on) E.forEach(function(e){ mailUi.empSel[e.id] = true; }); render(); return true; }
   if (act === 'mail-all' || act === 'mail-none'){
     (mailUi.result ? mailUi.result.messages : []).forEach(function(m){ m.files.forEach(function(f){ if (act === 'mail-all') mailUi.sel[f.id] = true; else delete mailUi.sel[f.id]; }); });
     render(); return true;
@@ -955,7 +1180,8 @@ function mailAction(act, t){
         var ext = (x.name.match(/\.(\w+)$/) || [])[1] || '';
         var type = {pdf:'application/pdf', xml:'text/xml', jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', webp:'image/webp'}[ext.toLowerCase()] || '';
         files.push(new File([x.data], x.name, {type:type}));
-        metas.push({sender:x.from, senderName:x.fromName, mail:{subject:x.subject, date:x.date}});
+        var xe = empByEmail(x.from);
+        metas.push({sender:x.from, senderName:x.fromName, employeeId: xe ? xe.id : null, mail:{subject:x.subject, date:x.date}});
       });
       mailUi.result.messages.forEach(function(m){ m.files.forEach(function(f){ if (mailUi.sel[f.id]){ f.seen = true; delete mailUi.sel[f.id]; } }); });
       toast('已导入 ' + files.length + ' 个文件，正在识别');
@@ -997,6 +1223,9 @@ document.addEventListener('click', function(e){
   var act = t.getAttribute('data-act');
   if (act === 'pick') $('#fileInput').click();
   else if (/^mail-/.test(act)) mailAction(act, t);
+  else if (/^st-/.test(act)) staffAction(act, t);
+  else if (act === 'hist-range') histRange(t.getAttribute('data-r'));
+  else if (act === 'hist-export'){ var HR = histMatches(); exportList(HR.list, (histUi.who.trim() || '全部') + (histUi.from || histUi.to ? '_' + (histUi.from || '') + '至' + (histUi.to || '') : '')); }
   else if (act === 'ex-cancel') closeExport();
   else if (act === 'ex-go') doExport();
   else if (act === 'open-dir') window.api.openDataDir();
@@ -1033,6 +1262,7 @@ document.addEventListener('keydown', function(e){
 });
 document.addEventListener('input', function(e){
   if (e.target.id === 'mail-senders'){ mailUi.senders = e.target.value; return; }
+  if (e.target.id === 'hist-who'){ histUi.who = e.target.value; histRefresh(); return; }
   if (e.target.id === 'q'){ ui.q = e.target.value; var pos = e.target.selectionStart; render(); var q = $('#q'); if (q){ q.focus(); try{ q.setSelectionRange(pos,pos); }catch(_){} } }
 });
 document.addEventListener('change', function(e){
@@ -1050,7 +1280,18 @@ document.addEventListener('change', function(e){
     save(); refreshReview(inv);
     return;
   }
-  if (t.id === 'sender-filter'){ ui.sender = t.value; render(); return; }
+  if (t.id === 'person-filter'){ ui.person = t.value; render(); return; }
+  if (t.id === 'rv-emp'){ var ri = findInv(t.getAttribute('data-id')); if (ri){ ri.employeeId = t.value || null; save(); render(); toast(t.value ? '报销人已改为「' + empById(t.value).name + '」' : '已取消指定报销人'); } return; }
+  if (t.hasAttribute && t.hasAttribute('data-addto')){
+    var em = empById(t.value), addr = t.getAttribute('data-addto');
+    if (em && (em.emails || []).indexOf(addr) < 0){ em.emails = (em.emails || []).concat([addr]); save(); render(); toast('已把 ' + addr + ' 登记到「' + em.name + '」'); }
+    return;
+  }
+  if (t.id === 'hist-type'){ histUi.dateType = t.value; histRefresh(); return; }
+  if (t.id === 'hist-from'){ histUi.from = t.value; histRefresh(); return; }
+  if (t.id === 'hist-to'){ histUi.to = t.value; histRefresh(); return; }
+  if (t.id === 'hist-status'){ histUi.status = t.value; histRefresh(); return; }
+  if (t.id === 'hist-who'){ histUi.who = t.value; histRefresh(); return; }
   if (t.id === 'mail-preset'){ var mf = mailForm(); mailUi.draft = {preset:mf.preset, user:mf.user, host:mf.host, port:mf.port, secure:mf.secure}; mailUi.passDraft = mf.pass; render(); return; }
   if (t.classList && t.classList.contains('mail-file')){ var fid = t.getAttribute('data-fid'); if (t.checked) mailUi.sel[fid] = true; else delete mailUi.sel[fid]; render(); return; }
   if (t.id === 'mail-days'){ mailUi.days = t.value; return; }
@@ -1080,61 +1321,61 @@ document.addEventListener('drop', function(e){
 
 /* ---------- 导出 ---------- */
 /* 导出：先选提交人，生成 Excel（发票汇总 + 发票明细两张表） */
-function exportGroups(){
-  var ready = invoices.filter(function(i){ return i.status === 'ready'; });
-  var g = {}, manual = 0;
-  ready.forEach(function(i){ if (i.sender){ g[i.sender] = g[i.sender] || {label:senderLabel(i), n:0}; g[i.sender].n++; } else manual++; });
-  return {ready:ready, g:g, manual:manual};
-}
 function openExport(){
-  var G = exportGroups();
-  if (!G.ready.length){ toast('台账里还没有发票'); return; }
-  var def = ui.sender || '';
-  var opts = '<option value="">全部（' + G.ready.length + ' 张）</option>' +
-    Object.keys(G.g).sort().map(function(k){ return '<option value="' + esc(k) + '"' + (def === k ? ' selected' : '') + '>' + esc(G.g[k].label + '（' + k + '）') + ' · ' + G.g[k].n + ' 张</option>'; }).join('') +
-    (G.manual ? '<option value="__none"' + (def === '__none' ? ' selected' : '') + '>手动上传的 · ' + G.manual + ' 张</option>' : '');
+  var ready = invoices.filter(function(i){ return i.status === 'ready'; });
+  if (!ready.length){ toast('台账里还没有发票'); return; }
+  var G = personGroups(ready), def = ui.person || '';
+  var opts = '<option value="">全部（' + ready.length + ' 张）</option>' +
+    G.map(function(g){ return '<option value="' + esc(g.key) + '"' + (def === g.key ? ' selected' : '') + '>' + esc(g.label + (g.kind === 1 ? '（未登记 ' + g.sub + '）' : g.sub ? '（' + g.sub + '）' : '')) + ' · ' + g.n + ' 张</option>'; }).join('');
   var bg = document.createElement('div');
   bg.className = 'modal-bg'; bg.id = 'export-modal';
   bg.innerHTML = '<div class="modal" role="dialog" aria-modal="true" aria-labelledby="ex-title"><h2 id="ex-title">导出台账</h2>' +
     '<label class="fld" for="ex-sender">导出谁的发票<select id="ex-sender">' + opts + '</select></label>' +
     '<label class="fld" for="ex-scope">范围<select id="ex-scope"><option value="all">全部发票</option><option value="todo">只导出待处理的（拦截、复核且未处理）</option><option value="ok">只导出已通过的（自动通过和人工通过）</option></select></label>' +
-    '<p class="note">导出为 Excel 文件，包含两张表：「发票汇总」每张发票一行，「发票明细」每行明细一行。</p>' +
+    '<p class="note">导出为 Excel 文件，包含两张表：「发票汇总」每张发票一行，「发票明细」每行明细一行。想按日期导出某个人的，可以用「报销查询」查出来再导出。</p>' +
     '<div class="actions"><button class="btn lg" type="button" data-act="ex-cancel">取消</button><button class="btn lg primary grow" type="button" data-act="ex-go">导出 Excel</button></div></div>';
   document.body.appendChild(bg);
   $('#ex-sender').focus();
 }
 function closeExport(){ var m = $('#export-modal'); if (m) m.remove(); }
 function doExport(){
-  if (!window.XLSX){ toast('导出组件没有加载，请重启软件后再试'); return; }
   var who = $('#ex-sender').value, scope = $('#ex-scope').value;
   closeExport();
   var A = auditAll();
   var list = sortedList(A).filter(function(i){
     if (i.status !== 'ready') return false;
-    if (who === '__none' ? !!i.sender : (who && i.sender !== who)) return false;
+    if (who && personKey(i) !== who) return false;
     var lv = A[i.id].level;
     if (scope === 'todo') return lv !== 'pass' && !i.decision;
     if (scope === 'ok') return lv === 'pass' || i.decision === 'approved';
     return true;
   });
+  var g = who ? personGroups(list)[0] : null;
+  exportList(list, g ? g.label : '全部');
+}
+function exportList(list, label){
+  if (!window.XLSX){ toast('导出组件没有加载，请重启软件后再试'); return; }
+  list = list.filter(function(i){ return i.status === 'ready'; });
   if (!list.length){ toast('没有符合条件的发票'); return; }
+  var A = auditAll();
   var res = function(i){ var lv = A[i.id].level; return LV[lv].t; };
   var dec = function(i){ return i.decision ? DEC[i.decision] : (A[i.id].level === 'pass' ? '自动通过' : '待处理'); };
   var issues = function(i){ return A[i.id].checks.filter(function(c){ return c.k === 'fail' || c.k === 'warn'; }).map(function(c){ return c.title + '：' + c.detail; }).join('；'); };
   var how = function(i){ return i.source === 'sample' ? '示例' : i.source === 'manual' ? '手动录入' : METHOD[i.method] || ''; };
-  var H1 = ['提交人','提交人邮箱','审核结果','处理结果','发票类型','发票代码','发票号码','开票日期','购买方','购买方税号','销售方','销售方税号','金额','税额','价税合计','税率','费用类别','项目','明细行数','审核发现','复核意见','邮件主题','邮件时间','来源文件','识别方式'];
+  var dept = function(i){ var e = employeeOf(i); return e ? e.dept || '' : ''; };
+  var H1 = ['报销人','部门','提交邮箱','提交时间','审核结果','处理结果','发票类型','发票代码','发票号码','开票日期','购买方','购买方税号','销售方','销售方税号','金额','税额','价税合计','税率','费用类别','项目','明细行数','审核发现','复核意见','邮件主题','邮件时间','来源文件','识别方式'];
   var S1 = [H1].concat(list.map(function(i){
     var f = i.f;
-    return [senderLabel(i), i.sender || '', res(i), dec(i), f.type, f.code || '', f.no || '', f.date || '', f.buyer, f.buyerTax, f.seller, f.sellerTax,
+    return [personLabel(i), dept(i), i.sender || '', fmtDateTime(subDate(i).toISOString()), res(i), dec(i), f.type, f.code || '', f.no || '', f.date || '', f.buyer, f.buyerTax, f.seller, f.sellerTax,
       num(f.amount), num(f.tax), num(f.total), f.rate == null || f.rate === '' ? '' : f.rate + '%', f.cat, f.items, (f.lines || []).length,
       issues(i), i.memo || '', i.mail ? i.mail.subject : '', i.mail ? fmtDateTime(i.mail.date) : '', i.file || '', how(i)];
   }));
-  var H2 = ['提交人','提交人邮箱','发票号码','开票日期','销售方','销售方税号','行号','项目名称','规格型号','单位','数量','单价','金额','税率','税额','审核结果','来源文件'];
+  var H2 = ['报销人','部门','提交邮箱','发票号码','开票日期','销售方','销售方税号','行号','项目名称','规格型号','单位','数量','单价','金额','税率','税额','审核结果','来源文件'];
   var S2 = [H2];
   list.forEach(function(i){
     var f = i.f, L = (f.lines && f.lines.length) ? f.lines : [{name:f.items, amount:f.amount, rate:f.rate, tax:f.tax}];
     L.forEach(function(l, n){
-      S2.push([senderLabel(i), i.sender || '', f.no || '', f.date || '', f.seller, f.sellerTax, n + 1, l.name || '', l.spec || '', l.unit || '',
+      S2.push([personLabel(i), dept(i), i.sender || '', f.no || '', f.date || '', f.seller, f.sellerTax, n + 1, l.name || '', l.spec || '', l.unit || '',
         num(l.qty), num(l.price), num(l.amount), l.rate == null || l.rate === '' ? '' : l.rate + '%', num(l.tax), res(i), i.file || '']);
     });
   });
@@ -1146,10 +1387,10 @@ function doExport(){
     for (var r = 1; r < rows.length; r++) moneyCols.forEach(function(c){ var cell = ws[XL.utils.encode_cell({r:r, c:c})]; if (cell && cell.t === 'n') cell.z = '#,##0.00'; });
     return ws;
   }
-  XL.utils.book_append_sheet(wb, sheet(S1, [10,24,8,12,18,14,24,12,26,22,26,22,12,10,12,8,10,26,8,50,24,24,16,24,16], [12,13,14]), '发票汇总');
-  XL.utils.book_append_sheet(wb, sheet(S2, [10,24,24,12,26,22,6,30,14,8,10,14,12,8,10,8,24], [12,14]), '发票明细');
+  XL.utils.book_append_sheet(wb, sheet(S1, [10,10,24,16,8,12,18,14,24,12,26,22,26,22,12,10,12,8,10,26,8,50,24,24,16,24,16], [14,15,16]), '发票汇总');
+  XL.utils.book_append_sheet(wb, sheet(S2, [10,10,24,24,12,26,22,6,30,14,8,10,14,12,8,10,8,24], [13,15]), '发票明细');
   var data = XL.write(wb, {type:'array', bookType:'xlsx'});
-  var d = new Date(), label = who === '__none' ? '手动上传' : who ? (exportGroups().g[who] || {}).label || who : '全部';
+  var d = new Date();
   var name = '发票台账_' + String(label).replace(/[\\/:*?"<>|]/g, '_') + '_' + d.getFullYear() + ('0'+(d.getMonth()+1)).slice(-2) + ('0'+d.getDate()).slice(-2) + '.xlsx';
   window.api.saveFile(name, new Uint8Array(data)).then(function(r){
     if (!r || !r.ok) toast('导出失败：' + (r && r.message || '无法写入文件'));

@@ -226,6 +226,11 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13px;min-width:880px}
 .modal-bg{position:fixed;inset:0;background:rgba(15,19,26,.45);display:flex;align-items:center;justify-content:center;z-index:40;padding:16px}
 .modal{background:var(--surface);border:1px solid var(--line);border-radius:10px;width:min(480px,100%);padding:22px 24px;display:flex;flex-direction:column;gap:14px;box-shadow:0 12px 40px rgba(0,0,0,.25)}
 .modal h2{margin:0;font-size:17px}
+.pill.emp.on{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-line)}
+.hist-grid{display:grid;grid-template-columns:2fr 1.6fr 1fr 1fr 1.4fr;gap:10px 14px}
+@media (max-width:1100px){.hist-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.tbl tr.dayrow td{background:var(--surface-2);cursor:default;padding-top:8px;padding-bottom:8px}
+.tbl tbody tr.dayrow:hover td{background:var(--surface-2)}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(24px + env(safe-area-inset-bottom,0px));background:var(--inv-bg);color:var(--inv-fg);padding:10px 18px;border-radius:8px;font-size:13px;box-shadow:0 6px 24px rgba(0,0,0,.18);z-index:50;max-width:calc(100% - 32px)}
 @media (max-width:640px){
   .fgrid{grid-template-columns:minmax(0,1fr)}

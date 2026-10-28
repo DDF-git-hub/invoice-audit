@@ -99,6 +99,26 @@ fs.mkdirSync(out, { recursive: true });
         await page.waitForTimeout(500);
       }
     };
+    // 登记员工：张三有两个邮箱，李四一个
+    await page.evaluate(() => { location.hash = 'staff'; });
+    await page.waitForSelector('#st-name');
+    await page.fill('#st-name', '张三');
+    await page.fill('#st-dept', '市场部');
+    await page.fill('#st-emails', 'zhangsan@test.local\nZhang.San@test2.local');
+    await page.click('[data-act="st-save"]');
+    await page.fill('#st-name', '李四');
+    await page.fill('#st-emails', 'lisi@test.local');
+    await page.click('[data-act="st-save"]');
+    await page.fill('#st-name', '王五');
+    await page.fill('#st-emails', 'zhangsan@test.local');
+    await page.click('[data-act="st-save"]');
+    const dupErr = await page.evaluate(() => (document.querySelector('.errbox') || {}).textContent || '');
+    check(/已经登记给「张三」/.test(dupErr), '同一个邮箱不能登记给两个人：' + dupErr.slice(0, 40));
+    await page.click('[data-act="st-cancel"]');
+    const staffRows = await page.evaluate(() => document.querySelectorAll('section[aria-label="员工列表"] tbody tr').length);
+    check(staffRows === 2, '员工列表 ' + staffRows + ' 人');
+    await page.screenshot({ path: path.join(out, '11-员工.png'), fullPage: true });
+
     await page.evaluate(() => { location.hash = 'mail'; });
     await page.waitForSelector('#mail-preset');
     await page.selectOption('#mail-preset', 'custom');
@@ -113,7 +133,7 @@ fs.mkdirSync(out, { recursive: true });
     const bad = await page.evaluate(() => { const b = document.querySelector('.status-bad'); return b ? b.textContent : ''; });
     check(connected && !bad, '连接测试邮箱' + (bad ? '：' + bad : ''));
     if (connected && !bad) {
-      await page.fill('#mail-senders', ZHANG.address);
+      await page.click('button[data-act="mail-emp"]:has-text("张三")');
       await page.selectOption('#mail-days', '30');
       await page.click('[data-act="mail-scan"]');
       await page.waitForTimeout(500);
@@ -128,7 +148,8 @@ fs.mkdirSync(out, { recursive: true });
       }));
       await page.screenshot({ path: path.join(out, '07-邮件清单.png'), fullPage: true });
       check(!r.err, '检查邮件没有报错' + (r.err ? '：' + r.err : ''));
-      check(r.msgs === s.expect.messages, '只列出张三的邮件：' + r.msgs + ' 封（应为 ' + s.expect.messages + '）');
+      check(r.msgs === s.expect.messages, '只列出张三两个邮箱的邮件：' + r.msgs + ' 封（应为 ' + s.expect.messages + '）');
+      check(/zhang\.san@test2\.local/.test(r.text), '第二个邮箱发来的邮件也收到了');
       check(r.files === s.expect.files && r.checked === s.expect.files, '发票文件 ' + r.files + ' 个、默认勾选 ' + r.checked + ' 个（应为 ' + s.expect.files + '）');
       check(r.links === s.expect.deadLinks, '下载不了的链接单独列出：' + r.links + ' 个');
       check(!/lisi@|xzhangsan@|不应该被收进来/.test(r.text), '没有收进其他发件人的邮件');
@@ -143,16 +164,18 @@ fs.mkdirSync(out, { recursive: true });
       }
       await page.waitForTimeout(1500);
       const led = JSON.parse(fs.readFileSync(path.join(ud, 'ledger.json'), 'utf8'));
-      const mine = led.invoices.filter((i) => i.sender === ZHANG.address);
-      check(mine.length === s.expect.files, '台账里张三提交的发票：' + mine.length + ' 张');
-      check(mine.every((i) => i.senderName === ZHANG.name && i.mail && i.mail.subject), '每张都记下了提交人和邮件主题');
+      const zid = (led.cfg.employees.find((e) => e.name === '张三') || {}).id;
+      const mine = led.invoices.filter((i) => i.employeeId === zid);
+      check(mine.length === s.expect.files, '台账里归到张三名下的发票：' + mine.length + ' 张');
+      check(mine.every((i) => i.mail && i.mail.subject) && mine.some((i) => i.sender === 'zhang.san@test2.local'), '每张都记下了邮件，两个邮箱的都归到张三');
       const nos = mine.map((i) => i.f.no).sort();
       check(JSON.stringify(nos) === JSON.stringify(s.expect.nos.slice().sort()), '识别出的发票号码：' + nos.join('、'));
-      await page.selectOption('#sender-filter', ZHANG.address).catch(() => {});
+      await page.selectOption('#person-filter', 'emp:' + zid).catch(() => {});
       await page.waitForTimeout(400);
       await page.screenshot({ path: path.join(out, '08-按提交人筛选.png'), fullPage: true });
       const rows = await page.evaluate(() => document.querySelectorAll('tr[data-open]').length);
-      check(rows === s.expect.files, '按提交人筛选后显示 ' + rows + ' 行');
+      check(rows === s.expect.files, '按报销人筛选后显示 ' + rows + ' 行');
+      global.__zid = zid;
       // 再检查一次：已经导入过的不再默认勾选
       await page.evaluate(() => { location.hash = 'mail'; });
       await page.waitForSelector('[data-act="mail-scan"]');
@@ -216,13 +239,48 @@ fs.mkdirSync(out, { recursive: true });
       chk(typeof sum[0]['发票号码'] === 'string' && sum.every((r) => !/E\+/.test(String(r['发票号码']))), '发票号码按文字保存，不会变成科学计数法');
     }
     if (process.env.MAIL_TEST) {
-      const f2 = await exportAs('zhangsan@test.local');
+      const f2 = await exportAs('emp:' + global.__zid);
       chk(!!f2 && /张三/.test(path.basename(f2)), '按提交人导出：' + (f2 ? path.basename(f2) : '没有生成文件'));
       if (f2) {
         const wb = XLSX.readFile(f2);
         const sum = XLSX.utils.sheet_to_json(wb.Sheets['发票汇总']);
-        chk(sum.length === 4 && sum.every((r) => r['提交人邮箱'] === 'zhangsan@test.local'), '只导出了张三的 ' + sum.length + ' 张发票');
+        chk(sum.length === 5 && sum.every((r) => r['报销人'] === '张三' && r['部门'] === '市场部'), '只导出了张三的 ' + sum.length + ' 张发票（含两个邮箱）');
       }
+      // 手动上传的发票指定报销人
+      const manual = led.invoices.find((i) => i.file === 'sdp-geren.pdf');
+      await page.evaluate((id) => { location.hash = 'review-' + id; }, manual.id);
+      await page.waitForSelector('#rv-emp');
+      const lid = await page.evaluate(() => Array.from(document.querySelectorAll('#rv-emp option')).find((o) => o.textContent.indexOf('李四') === 0).value);
+      await page.selectOption('#rv-emp', lid);
+      await page.waitForTimeout(800);
+      // 报销查询
+      await page.evaluate(() => { location.hash = 'history'; });
+      await page.waitForSelector('#hist-who');
+      await page.fill('#hist-who', '张三');
+      await page.click('[data-act="hist-range"][data-r="today"]');
+      await page.waitForTimeout(300);
+      const h1 = await page.evaluate(() => ({ rows: document.querySelectorAll('#hist-results tr[data-open]').length, head: (document.querySelector('#hist-results .filters') || {}).innerText || '' }));
+      await page.screenshot({ path: path.join(out, '12-报销查询.png'), fullPage: true });
+      chk(h1.rows === 5 && /5 张/.test(h1.head), '查询张三今天的报销：' + h1.rows + ' 张（' + h1.head.replace(/\s+/g, ' ').slice(0, 60) + '）');
+      const y = new Date(Date.now() - 864e5), ys = y.getFullYear() + '-' + String(y.getMonth() + 1).padStart(2, '0') + '-' + String(y.getDate()).padStart(2, '0');
+      await page.fill('#hist-from', ys); await page.fill('#hist-to', ys);
+      await page.dispatchEvent('#hist-to', 'change');
+      await page.waitForTimeout(300);
+      const h2 = await page.evaluate(() => document.querySelectorAll('#hist-results tr[data-open]').length);
+      chk(h2 === 0, '换成昨天：' + h2 + ' 张');
+      await page.click('[data-act="hist-range"][data-r="today"]');
+      await page.fill('#hist-who', '李四');
+      await page.waitForTimeout(300);
+      const h3 = await page.evaluate(() => document.querySelectorAll('#hist-results tr[data-open]').length);
+      chk(h3 === 1, '手动指定给李四的发票能按李四查到：' + h3 + ' 张');
+      await page.fill('#hist-who', '张三');
+      await page.waitForTimeout(300);
+      const before = fs.readdirSync(exportDir).length;
+      await page.click('[data-act="hist-export"]');
+      let f3 = null;
+      for (let k = 0; k < 40 && !f3; k++) { const fl = fs.readdirSync(exportDir); if (fl.length > before) f3 = fl.find((n) => /张三_/.test(n)); await page.waitForTimeout(250); }
+      chk(!!f3, '导出查询结果：' + (f3 || '没有生成文件'));
+      if (f3) { const sum3 = XLSX.utils.sheet_to_json(XLSX.readFile(path.join(exportDir, f3)).Sheets['发票汇总']); chk(sum3.length === 5, '查询结果导出 ' + sum3.length + ' 张'); }
     }
   }
 

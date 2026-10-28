@@ -66,10 +66,12 @@ async function seed(smtpPort) {
   await send({ from: ZHANG, subject: '周报', html: '<p>本周工作</p><img src="cid:logo">', attachments: [{ filename: 'logo.png', content: tinyPng, cid: 'logo' }] });
   await send({ from: ZHANG, subject: '住宿发票下载', html: '<p>点击下载发票：<a href="http://127.0.0.1:' + port + '/download/fp.pdf">下载</a></p>' });
   await send({ from: ZHANG, subject: '发票链接（已失效）', text: '下载地址：http://127.0.0.1:' + port + '/invoice/missing' });
+  // 张三的第二个邮箱（私人 QQ 邮箱之类）
+  await send({ from: { name: '张三（私人）', address: 'zhang.san@test2.local' }, subject: '建材发票', attachments: [{ filename: '建材.pdf', content: file('sdp-mingxi.pdf') }] });
   await send({ from: { name: '李四', address: 'lisi@test.local' }, subject: '打车发票', attachments: [{ filename: '打车.pdf', content: file('sdp-geren.pdf') }] });
   await send({ from: { name: '冒充', address: 'xzhangsan@test.local' }, subject: '不应该被收进来', attachments: [{ filename: 'x.pdf', content: file('sdp-geren.pdf') }] });
   t.close();
-  return { srv, expect: { messages: 6, files: 4, deadLinks: 1, nos: ['26312000000207718804', '26112000000310087642', '26319166000003651200', '38291746'] } };
+  return { srv, expect: { messages: 7, files: 5, deadLinks: 1, nos: ['26312000000207718804', '26112000000310087642', '26319166000003651200', '38291746', '26612000000425517093'] } };
 }
 
 module.exports = { seed, TO, ZHANG };

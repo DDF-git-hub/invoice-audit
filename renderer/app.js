@@ -50,6 +50,7 @@ function applyLoaded(p){
     CATS.forEach(function(k){ if(!cfg.limits[k]) cfg.limits[k] = d.limits[k]; });
   }
   invoices = Array.isArray(p.invoices) ? p.invoices : [];
+  vouchers = Array.isArray(p.vouchers) ? p.vouchers : [];
   invoices.forEach(function(i){
     if (i.status === 'recognizing'){ i.status = 'error'; i.err = '上次识别被中断，可重新上传或手动补录'; }
     if (i.status === 'error' && !i.errCode && /^还没设置 AI/.test(i.err || '')) i.errCode = 'no_ai';
@@ -59,7 +60,7 @@ function applyLoaded(p){
 function save(){
   clearTimeout(saveTimer);
   saveTimer = setTimeout(function(){
-    var payload = {v:1, savedAt:new Date().toISOString(), cfg:cfg, invoices:invoices.map(function(i){ var o = Object.assign({}, i); if (o.status === 'recognizing'){ o.status = 'error'; o.err = '识别被中断，可重新上传或手动补录'; } return o; })};
+    var payload = {v:1, savedAt:new Date().toISOString(), cfg:cfg, vouchers:vouchers, invoices:invoices.map(function(i){ var o = Object.assign({}, i); if (o.status === 'recognizing'){ o.status = 'error'; o.err = '识别被中断，可重新上传或手动补录'; } return o; })};
     window.api.saveData(payload).then(function(r){
       storageOk = !!(r && r.ok);
       if (!storageOk) toast('保存失败：' + (r && r.message || '无法写入数据文件'));
@@ -554,6 +555,7 @@ function route(){
   if (h === 'ai') return {v:'ai'};
   if (h === 'mail') return {v:'mail'};
   if (h === 'staff') return {v:'staff'};
+  if (/^voucher(-done|-rules|-u8)?$/.test(h)) return {v:'voucher', tab:h};
   if (h === 'history') return {v:'history'};
   if (h === 'review') return {v:'review'};
   var m = h.match(/^review-([A-Za-z0-9]+)$/);
@@ -568,6 +570,7 @@ function render(){
   else if (r.v === 'ai') el.innerHTML = viewAI();
   else if (r.v === 'mail') el.innerHTML = viewMail();
   else if (r.v === 'staff') el.innerHTML = viewStaff();
+  else if (r.v === 'voucher') el.innerHTML = viewVoucher(r.tab);
   else if (r.v === 'history') el.innerHTML = viewHistory();
   else if (r.v === 'review') el.innerHTML = viewReview(r.id);
   else el.innerHTML = viewLedger();
@@ -691,7 +694,7 @@ function viewReview(id){
   h += '<div class="cols"><section class="rv-left" aria-label="发票原件">';
   if (inv.img) h += '<div class="card pad"><img class="orig" src="' + inv.img + '" alt="发票原件：' + esc(inv.file) + '"></div>';
   h += '<div class="card pad stack"><div class="sub">' + (inv.img ? '按识别结果还原，黄色是触发规则的字段' : '票面信息（黄色是触发规则的字段）') + '</div><div class="paper-wrap" id="rv-paper">' + paper(inv, au) + '</div></div>';
-  h += '<p class="note">' + (inv.source === 'sample' ? '这是示例数据。' : inv.source === 'manual' ? '手动录入。' : '来源文件：' + esc(inv.file) + '。') + (inv.sender ? ' 来自邮件：' + esc(inv.senderName ? inv.senderName + ' <' + inv.sender + '>' : inv.sender) + (inv.mail && inv.mail.subject ? '「' + esc(inv.mail.subject) + '」' : '') + (inv.mail && inv.mail.date ? ' ' + esc(fmtDateTime(inv.mail.date)) : '') + '。' : '') + (inv.method && METHOD[inv.method] ? ' 识别方式：' + METHOD[inv.method] + '。' : '') + (inv.conf != null ? ' 置信度 ' + Math.round(inv.conf*100) + '%。' : '') + (inv.qr ? ' 二维码：已读取' + (inv.qr.mismatch && inv.qr.mismatch.length ? '，' + esc(inv.qr.mismatch.join('、')) + '已按二维码修正' : '，号码和日期一致') + '。' : '') + (inv.aiNotes ? ' 识别备注：' + esc(inv.aiNotes) : '') + '</p></section>';
+  h += '<p class="note">' + (inv.source === 'sample' ? '这是示例数据。' : inv.source === 'manual' ? '手动录入。' : '来源文件：' + esc(inv.file) + '。') + (inv.voucher ? ' 已生成凭证 ' + esc(inv.voucher.display) + '。' : '') + (inv.sender ? ' 来自邮件：' + esc(inv.senderName ? inv.senderName + ' <' + inv.sender + '>' : inv.sender) + (inv.mail && inv.mail.subject ? '「' + esc(inv.mail.subject) + '」' : '') + (inv.mail && inv.mail.date ? ' ' + esc(fmtDateTime(inv.mail.date)) : '') + '。' : '') + (inv.method && METHOD[inv.method] ? ' 识别方式：' + METHOD[inv.method] + '。' : '') + (inv.conf != null ? ' 置信度 ' + Math.round(inv.conf*100) + '%。' : '') + (inv.qr ? ' 二维码：已读取' + (inv.qr.mismatch && inv.qr.mismatch.length ? '，' + esc(inv.qr.mismatch.join('、')) + '已按二维码修正' : '，号码和日期一致') + '。' : '') + (inv.aiNotes ? ' 识别备注：' + esc(inv.aiNotes) : '') + '</p></section>';
 
   h += '<div class="rv-right">';
   if (inv.status === 'error') h += '<div class="errbox" role="alert">' + esc(inv.err) + '</div>';
@@ -1194,6 +1197,429 @@ function mailAction(act, t){
 if (window.api.onMailProgress) window.api.onMailProgress(function(t){ mailUi.progress = t; var el = $('#mail-progress'); if (el && mailUi.scanning) el.textContent = t; });
 function senderLabel(i){ return i.sender ? (i.senderName || i.sender.split('@')[0]) : ''; }
 
+/* ---------- 凭证：科目、分录规则、生成与审核 ---------- */
+// 科目编码按新会计准则常用编码（4-2-2），演示用，可在「科目与规则」里改或从 Excel 导入
+var DEFAULT_ACCOUNTS = [
+  ['1001','库存现金',''],['1002','银行存款',''],
+  ['2221','应交税费',''],['222101','应交增值税',''],['22210101','进项税额',''],
+  ['2241','其他应付款',''],['224101','员工往来','person'],
+  ['6601','销售费用',''],['660101','办公费','dept'],['660102','差旅费','dept'],['660103','交通费','dept'],['660104','业务招待费','dept'],['660199','其他','dept'],
+  ['6602','管理费用',''],['660201','办公费','dept'],['660202','差旅费','dept'],['660203','交通费','dept'],['660204','业务招待费','dept'],['660299','其他','dept']
+];
+function defaultAcct(){
+  return {
+    accounts: DEFAULT_ACCOUNTS.map(function(a){ return {code:a[0], name:a[1], aux:a[2]}; }),
+    rules: [{id:'r1', cat:'餐饮', code:'660204'}, {id:'r2', cat:'住宿', code:'660202'}, {id:'r3', cat:'交通', code:'660203'}, {id:'r4', cat:'办公用品', code:'660201'}, {id:'r5', cat:'其他', code:'660299'},
+      {id:'r6', dept:'市场部', cat:'餐饮', code:'660104'}, {id:'r7', dept:'市场部', cat:'交通', code:'660103'}, {id:'r8', dept:'市场部', cat:'住宿', code:'660102'}],
+    creditCode:'224101', taxCode:'22210101', dedSpecial:true, dedTravel:true
+  };
+}
+function acct(){ if (!cfg.acct || !cfg.acct.accounts) cfg.acct = defaultAcct(); return cfg.acct; }
+var vouchers = [];
+function accByCode(code){ code = String(code || '').trim(); return acct().accounts.filter(function(a){ return a.code === code; })[0] || null; }
+function isLeaf(code){ return !acct().accounts.some(function(a){ return a.code !== code && a.code.indexOf(code) === 0; }); }
+function fullName(code){
+  var a = accByCode(code); if (!a) return '';
+  var parts = acct().accounts.filter(function(x){ return code.indexOf(x.code) === 0 && x.code !== code; }).sort(function(x, y){ return x.code.length - y.code.length; }).map(function(x){ return x.name; });
+  return parts.concat([a.name]).join('-');
+}
+function matchRule(inv){
+  var e = employeeOf(inv), dept = e && e.dept || '', cat = inv.f.cat, seller = normName(inv.f.seller), best = null, bs = -1;
+  acct().rules.forEach(function(r){
+    if (!r.seller && !r.dept && !r.cat) return;
+    if (r.seller && normName(r.seller) !== seller) return;
+    if (r.dept && r.dept !== dept) return;
+    if (r.cat && r.cat !== cat) return;
+    var sc = (r.seller ? 4 : 0) + (r.dept ? 2 : 0) + (r.cat ? 1 : 0);
+    if (sc >= bs){ bs = sc; best = r; }
+  });
+  return best;
+}
+function ruleText(r){ return r ? [r.seller ? '销售方「' + r.seller + '」' : '', r.dept ? '部门「' + r.dept + '」' : '', r.cat ? '类别「' + r.cat + '」' : ''].filter(Boolean).join(' + ') : '没有匹配的规则'; }
+function isDeductible(inv){ var t = inv.f.type || '', A = acct(); return !!((A.dedSpecial && /专用/.test(t)) || (A.dedTravel && /铁路|航空|客票|行程单/.test(t))); }
+function eligibleFor(inv, A){ return inv.status === 'ready' && ((A[inv.id] && A[inv.id].level === 'pass' && !inv.decision) || inv.decision === 'approved'); }
+function genLines(invs){
+  var lines = [], total = 0, e0 = employeeOf(invs[0]);
+  invs.forEach(function(inv){
+    var f = inv.f, T = num(f.total) || 0, A = num(f.amount), t = num(f.tax) || 0, e = employeeOf(inv), r = matchRule(inv);
+    var ded = isDeductible(inv) && t > 0 && A != null;
+    var tail = f.no ? ' 发票' + String(f.no).slice(-8) : '';
+    lines.push({dc:'D', code: r ? r.code : '', summary: (personLabel(inv) || '') + '报销' + (f.cat === '其他' ? '' : f.cat) + '费 ' + (f.seller || '') + tail, amount: r2(ded ? A : T), dept: e && e.dept || '', person: '', invId: inv.id, kind: 'exp', rule: r ? '规则：' + ruleText(r) : '没有匹配的规则'});
+    if (ded) lines.push({dc:'D', code: acct().taxCode, summary: '进项税额' + tail, amount: r2(t), dept: '', person: '', invId: inv.id, kind: 'tax', rule: '可抵扣：' + (/专用/.test(f.type) ? '专用发票' : '旅客运输票据')});
+    total += T;
+  });
+  var name = personLabel(invs[0]) || '未指定报销人';
+  lines.push({dc:'C', code: acct().creditCode, summary: '应付' + name + '报销款（' + invs.length + ' 张发票）', amount: r2(total), dept: '', person: e0 ? e0.id : '', kind: 'credit', rule: '员工报销款'});
+  return lines;
+}
+// 待确认的凭证：符合条件的发票按「报销人 + 提交日期」合并；手动改过的草稿会保留
+function voucherState(){
+  var A = auditAll(), used = {};
+  vouchers.forEach(function(v){ if (v.status !== 'draft') v.invIds.forEach(function(id){ used[id] = v; }); });
+  var groups = {}, order = [];
+  invoices.forEach(function(i){
+    if (used[i.id] || !eligibleFor(i, A)) return;
+    var k = personKey(i) + '|' + dayOf(subDate(i));
+    if (!groups[k]){ groups[k] = []; order.push(k); }
+    groups[k].push(i);
+  });
+  var drafts = order.map(function(k){
+    var invs = groups[k].sort(function(a, b){ return a.createdAt - b.createdAt; }), ids = invs.map(function(i){ return i.id; });
+    var stored = vouchers.filter(function(v){ return v.status === 'draft' && v.key === k; })[0];
+    var e = employeeOf(invs[0]);
+    var base = {key:k, day:k.split('|')[1], invIds:ids, personLabel: personLabel(invs[0]) || '未指定报销人', dept: e && e.dept || '', empId: e ? e.id : ''};
+    if (stored){ stored.stale = stored.invIds.slice().sort().join() !== ids.slice().sort().join(); return Object.assign(stored, {personLabel:base.personLabel, dept:base.dept, empId:base.empId}); }
+    return Object.assign(base, {id:'v' + uid(), status:'draft', date:base.day, lines:genLines(invs), edited:false, log:[]});
+  });
+  // 发票已经不符合条件（被驳回、删除）的旧草稿清掉
+  vouchers = vouchers.filter(function(v){ return v.status !== 'draft' || groups[v.key]; });
+  return {drafts:drafts, confirmed:vouchers.filter(function(v){ return v.status === 'confirmed'; }), posted:vouchers.filter(function(v){ return v.status === 'posted'; })};
+}
+function validateV(v){
+  var errs = [], d = 0, c = 0;
+  v.lines.forEach(function(l, i){
+    var a = accByCode(l.code), n = '第 ' + (i + 1) + ' 行';
+    if (!l.code) errs.push(n + '没有科目');
+    else if (!a) errs.push(n + '科目 ' + l.code + ' 不在科目表里');
+    else if (!isLeaf(l.code)) errs.push(n + '「' + fullName(l.code) + '」不是末级科目');
+    if (a && a.aux === 'dept' && !l.dept) errs.push(n + '「' + fullName(l.code) + '」需要部门（可以在「员工」页给报销人填部门）');
+    if (a && a.aux === 'person' && !(l.person && empById(l.person))) errs.push(n + '「' + fullName(l.code) + '」需要个人（请先给发票指定报销人）');
+    if (!(num(l.amount) > 0)) errs.push(n + '金额要大于 0');
+    if (l.dc === 'D') d += num(l.amount) || 0; else c += num(l.amount) || 0;
+  });
+  if (!v.lines.length) errs.push('没有分录');
+  if (Math.abs(r2(d) - r2(c)) > 0.001) errs.push('借贷不平衡：借方 ' + fmtN(r2(d)) + '，贷方 ' + fmtN(r2(c)) + '，相差 ' + fmtN(Math.abs(r2(d - c))));
+  var invTotal = r2(v.invIds.reduce(function(s, id){ var i = findInv(id); return s + (i ? num(i.f.total) || 0 : 0); }, 0));
+  var warns = [];
+  if (Math.abs(r2(c) - invTotal) > 0.001) warns.push('贷方合计 ' + fmtN(r2(c)) + ' 和发票价税合计 ' + fmtN(invTotal) + ' 不一样，请确认是有意调整');
+  if (v.stale) warns.push('这张凭证改过以后，发票有了变化（新增或撤下了发票），建议点「按规则重新生成」');
+  return {errs:errs, warns:warns, d:r2(d), c:r2(c)};
+}
+function storeDraft(v){
+  if (vouchers.indexOf(v) < 0) vouchers.push(v);
+  v.edited = true;
+  return v;
+}
+function vlog(v, text){ (v.log = v.log || []).push({at:new Date().toISOString(), text:text}); }
+
+/* ---------- 凭证页 ---------- */
+var vUi = {u8:null, u8Status:null, u8Testing:false, posting:{}, viewer:null, learn:null, acctMsg:''};
+function loadU8(){ return window.api.u8Get().then(function(r){ if (r && r.ok) vUi.u8 = r.data; }); }
+function u8Badge(){
+  var c = vUi.u8 || {mode:'demo'};
+  return c.mode === 'openapi' ? '<span class="chip review">正式环境：用友 U8 开放平台 · 账套 ' + esc(c.account || '') + '</span>' : '<span class="chip idle">演示环境（模拟用友 U8）· 账套 ' + esc(c.account || '001') + '</span>';
+}
+function vTab(cur){
+  var S = voucherState();
+  var tabs = [['voucher','待确认', S.drafts.length], ['voucher-done','已确认 / 已生成', S.confirmed.length + S.posted.length], ['voucher-rules','科目与规则', ''], ['voucher-u8','U8 连接', '']];
+  return '<div class="rl-head"><div class="stack" style="gap:4px"><h1>凭证</h1><span class="muted" style="font-size:13px">审核通过的发票按「报销人 + 提交日期」合并成一张凭证，软件按规则做好分录，人工确认后生成到用友 U8。</span></div><div class="grow" style="margin-left:auto">' + u8Badge() + '</div></div>' +
+    '<nav class="nav" aria-label="凭证" style="margin-bottom:4px">' + tabs.map(function(t){ return '<a href="#' + t[0] + '" class="' + (cur === t[0] ? 'on' : '') + '">' + t[1] + (t[2] !== '' ? ' <span class="mono">' + t[2] + '</span>' : '') + '</a>'; }).join('') + '</nav>';
+}
+function lineRow(v, l, i, editable){
+  var a = accByCode(l.code), E = emps();
+  if (!editable){
+    return '<tr><td>' + (l.dc === 'D' ? '借' : '贷') + '</td><td><span class="mono">' + esc(l.code) + '</span> ' + esc(fullName(l.code)) + '</td><td>' + esc(l.summary) + '</td><td>' + esc(l.dept || '') + '</td><td>' + esc(l.person && empById(l.person) ? empById(l.person).name : '') + '</td><td class="num mono">' + (l.dc === 'D' ? fmtN(num(l.amount)) : '') + '</td><td class="num mono">' + (l.dc === 'C' ? fmtN(num(l.amount)) : '') + '</td></tr>';
+  }
+  var k = ' data-v="' + v.key + '" data-i="' + i + '"';
+  return '<tr class="vline">' +
+    '<td><select class="inp vl" data-f="dc"' + k + ' aria-label="借贷" style="width:56px"><option value="D"' + (l.dc === 'D' ? ' selected' : '') + '>借</option><option value="C"' + (l.dc === 'C' ? ' selected' : '') + '>贷</option></select></td>' +
+    '<td style="min-width:220px"><input class="inp mono vl" data-f="code"' + k + ' list="acct-list" value="' + esc(l.code) + '" aria-label="科目编码"><div class="sub" style="margin-top:2px">' + (a ? esc(fullName(l.code)) : '<span style="color:var(--block)">请选择科目</span>') + '</div></td>' +
+    '<td style="min-width:220px"><input class="inp vl" data-f="summary"' + k + ' value="' + esc(l.summary) + '" aria-label="摘要"></td>' +
+    '<td><input class="inp vl" data-f="dept"' + k + ' list="dept-list" value="' + esc(l.dept || '') + '" aria-label="部门" style="width:96px"' + (a && a.aux === 'dept' ? '' : ' placeholder="—"') + '></td>' +
+    '<td><select class="inp vl" data-f="person"' + k + ' aria-label="个人" style="width:96px"><option value="">—</option>' + E.map(function(e){ return '<option value="' + e.id + '"' + (l.person === e.id ? ' selected' : '') + '>' + esc(e.name) + '</option>'; }).join('') + '</select></td>' +
+    '<td><input class="inp mono vl" data-f="amount"' + k + ' inputmode="decimal" value="' + (num(l.amount) == null ? '' : num(l.amount).toFixed(2)) + '" aria-label="金额" style="width:110px;text-align:right"></td>' +
+    '<td class="muted" style="font-size:12px;min-width:120px">' + esc(l.rule || '手动添加') + '</td>' +
+    '<td><button class="linkbtn muted" type="button" data-act="vl-del"' + k + ' aria-label="删除这一行">删除</button></td></tr>';
+}
+function voucherCard(v, editable){
+  var chk = validateV(v), invs = v.invIds.map(findInv).filter(Boolean);
+  var h = '<section class="card" aria-label="凭证 ' + esc(v.personLabel || '') + '"><div class="filters" style="justify-content:space-between">' +
+    '<div><b>' + esc(v.personLabel || '') + '</b>' + (v.dept ? ' <span class="muted">' + esc(v.dept) + '</span>' : '') + ' <span class="muted">· 提交日期 ' + esc(v.day || v.date) + ' · ' + invs.length + ' 张发票 · 合计 <span class="mono">' + fmt(chk.c) + '</span></span>' +
+    (v.edited && v.status === 'draft' ? ' <span class="chip review">已手动修改</span>' : '') + (v.status === 'posted' ? ' <span class="chip pass">已生成 ' + esc(v.u8 && v.u8.display || '') + '</span>' : v.status === 'confirmed' ? ' <span class="chip idle">已确认，待生成</span>' : '') + '</div>' +
+    '<label class="fld" for="vd-' + v.key + '" style="flex-direction:row;align-items:center;gap:6px">凭证日期<input type="date" class="inp vdate" id="vd-' + v.key + '" data-v="' + v.key + '" value="' + esc(v.date) + '"' + (editable ? '' : ' disabled') + ' style="width:auto"></label></div>';
+  h += '<div class="tbl-wrap"><table class="tbl vtbl" style="min-width:' + (editable ? 1100 : 820) + 'px"><thead><tr><th>借/贷</th><th>科目</th><th>摘要</th><th>部门</th><th>个人</th>' + (editable ? '<th>金额</th><th>依据</th><th></th>' : '<th class="num">借方</th><th class="num">贷方</th>') + '</tr></thead><tbody>' +
+    v.lines.map(function(l, i){ return lineRow(v, l, i, editable); }).join('') + '</tbody></table></div>';
+  h += '<div class="pad stack" style="padding-top:10px"><div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:13px"><span>借方合计 <b class="mono">' + fmtN(chk.d) + '</b></span><span>贷方合计 <b class="mono">' + fmtN(chk.c) + '</b></span>' +
+    (chk.errs.length ? '<span class="status-bad">✕ 有 ' + chk.errs.length + ' 个问题，改好才能确认</span>' : '<span class="status-ok">✓ 借贷平衡、科目和辅助核算齐全</span>') + '</div>';
+  if (chk.errs.length) h += '<ul class="errlist">' + chk.errs.map(function(e){ return '<li>' + esc(e) + '</li>'; }).join('') + '</ul>';
+  if (chk.warns.length) h += '<ul class="warnlist">' + chk.warns.map(function(e){ return '<li>' + esc(e) + '</li>'; }).join('') + '</ul>';
+  h += '<div class="sub">发票：' + invs.map(function(i){ return '<a href="#review-' + i.id + '">' + esc((i.f.no || i.file || '').slice(-8)) + ' ' + esc(i.f.seller || '') + ' ' + fmt(num(i.f.total)) + '</a>'; }).join('，') + '</div>';
+  if (v.status === 'posted' && v.u8) h += '<div class="sub">已传入 U8：' + esc(v.u8.display) + '（' + esc(v.u8.period || '') + '，状态 ' + esc(v.u8.status || '') + '）· ' + esc(fmtDateTime(v.postedAt)) + '</div>';
+  if (v.lastError) h += '<div class="errbox">' + esc(v.lastError) + '</div>';
+  h += '<div class="actions">';
+  if (editable){
+    h += '<button class="btn sm" type="button" data-act="vl-add" data-v="' + v.key + '">加一行</button>';
+    if (v.edited) h += '<button class="btn sm" type="button" data-act="v-reset" data-v="' + v.key + '">按规则重新生成</button>';
+    h += '<button class="btn lg primary grow" type="button" data-act="v-confirm" data-v="' + v.key + '"' + (chk.errs.length ? ' disabled' : '') + '>确认分录</button>';
+  } else if (v.status === 'confirmed'){
+    h += '<button class="btn sm" type="button" data-act="v-unconfirm" data-v="' + v.key + '">撤回确认</button>' +
+      '<button class="btn lg primary grow" type="button" data-act="v-post" data-v="' + v.key + '"' + (vUi.posting[v.key] ? ' disabled' : '') + '>' + (vUi.posting[v.key] ? '<span class="spin"></span>正在生成…' : '生成凭证到 U8') + '</button>';
+  } else if (v.status === 'posted'){
+    h += '<button class="btn sm grow" type="button" data-act="v-view" data-v="' + v.key + '">查看凭证</button>';
+  }
+  return h + '</div></div></section>';
+}
+function datalists(){
+  var depts = {};
+  emps().forEach(function(e){ if (e.dept) depts[e.dept] = 1; });
+  acct().rules.forEach(function(r){ if (r.dept) depts[r.dept] = 1; });
+  return '<datalist id="acct-list">' + acct().accounts.filter(function(a){ return isLeaf(a.code); }).map(function(a){ return '<option value="' + esc(a.code) + '">' + esc(fullName(a.code)) + '</option>'; }).join('') + '</datalist>' +
+    '<datalist id="dept-list">' + Object.keys(depts).map(function(d){ return '<option value="' + esc(d) + '"></option>'; }).join('') + '</datalist>';
+}
+function viewVoucher(tab){
+  var S = voucherState(), h = vTab(tab) + datalists();
+  if (tab === 'voucher-rules') return h + viewAcctRules();
+  if (tab === 'voucher-u8') return h + viewU8();
+  if (tab === 'voucher-done'){
+    if (!S.confirmed.length && !S.posted.length) return h + '<div class="card"><div class="empty">还没有确认的凭证。在「待确认」里核对分录后点「确认分录」。</div></div>';
+    if (S.confirmed.length) h += '<div class="actions"><b>已确认、待生成 ' + S.confirmed.length + ' 张</b><button class="btn primary grow" type="button" data-act="v-post-all">全部生成到 U8</button></div>' + S.confirmed.map(function(v){ return voucherCard(v, false); }).join('');
+    if (S.posted.length) h += '<div class="actions" style="margin-top:8px"><b>已生成 ' + S.posted.length + ' 张</b><button class="btn sm grow" type="button" data-act="v-export">导出凭证清单（Excel）</button></div>' + S.posted.slice().reverse().map(function(v){ return voucherCard(v, false); }).join('');
+    return h;
+  }
+  if (!S.drafts.length) return h + '<div class="card"><div class="empty"><strong style="color:var(--ink)">没有待确认的分录</strong><span>只有审核通过（自动通过或人工通过）的发票才会生成分录。拦截和待复核的发票处理完以后会出现在这里。</span></div></div>';
+  return h + '<p class="note">分录按「科目与规则」自动生成。改科目、金额、部门都可以，改完确认时可以选择把改法存成规则。</p>' + S.drafts.map(function(v){ return voucherCard(v, true); }).join('');
+}
+
+/* 科目与规则 */
+function viewAcctRules(){
+  var A = acct();
+  var h = '<div class="cols"><section class="card pad stack" style="flex:1 1 520px;min-width:0" aria-label="分录规则"><div><h2 class="h">分录规则</h2><span class="sub">每张发票的费用记到哪个科目。条件越具体越优先：销售方 &gt; 部门 + 类别 &gt; 只按类别。</span></div>' +
+    '<div class="tbl-wrap"><table class="rtbl" style="min-width:520px"><thead><tr><th>销售方</th><th>部门</th><th>类别</th><th>记到科目</th><th></th></tr></thead><tbody>' +
+    A.rules.slice().sort(function(a, b){ return ((b.seller ? 4 : 0) + (b.dept ? 2 : 0) + (b.cat ? 1 : 0)) - ((a.seller ? 4 : 0) + (a.dept ? 2 : 0) + (a.cat ? 1 : 0)); }).map(function(r){
+      return '<tr><td>' + esc(r.seller || '任意') + '</td><td>' + esc(r.dept || '任意') + '</td><td>' + esc(r.cat || '任意') + '</td><td><span class="mono">' + esc(r.code) + '</span> ' + esc(fullName(r.code) || '（科目表里没有）') + '</td><td style="text-align:right"><button class="linkbtn muted" type="button" data-act="ar-del" data-id="' + r.id + '">删除</button></td></tr>';
+    }).join('') + '</tbody></table></div>' +
+    '<div class="fgrid"><label class="fld" for="ar-seller">销售方（可不填）<input id="ar-seller" placeholder="例如 上海小南国餐饮有限公司"></label><label class="fld" for="ar-dept">部门（可不填）<input id="ar-dept" list="dept-list" placeholder="例如 市场部"></label>' +
+    '<label class="fld" for="ar-cat">类别（可不填）<select id="ar-cat"><option value="">任意</option>' + CATS.map(function(c){ return '<option>' + c + '</option>'; }).join('') + '</select></label>' +
+    '<label class="fld" for="ar-code">记到科目<input id="ar-code" class="mono" list="acct-list" placeholder="科目编码"></label></div>' +
+    '<div class="actions"><button class="btn sm" type="button" data-act="ar-add">添加规则</button></div>' +
+    '<h2 class="h" style="margin-top:8px">其他设置</h2><div class="fgrid">' +
+    '<label class="fld" for="ar-credit">贷方（应付员工）科目<input id="ar-credit" class="mono acs" data-k="creditCode" list="acct-list" value="' + esc(A.creditCode) + '"></label>' +
+    '<label class="fld" for="ar-tax">进项税科目<input id="ar-tax" class="mono acs" data-k="taxCode" list="acct-list" value="' + esc(A.taxCode) + '"></label>' +
+    '<label class="fld wide" for="ar-ded1" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="ar-ded1" class="acs" data-k="dedSpecial"' + (A.dedSpecial ? ' checked' : '') + ' style="width:18px;height:18px;accent-color:var(--accent)">专用发票的税额单独记进项税</label>' +
+    '<label class="fld wide" for="ar-ded2" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="ar-ded2" class="acs" data-k="dedTravel"' + (A.dedTravel ? ' checked' : '') + ' style="width:18px;height:18px;accent-color:var(--accent)">火车票、飞机行程单等旅客运输票据的税额记进项税</label>' +
+    '</div><p class="note">其他发票（普通发票等）按价税合计全额记费用。具体科目和税务处理请以公司财务和税务口径为准。</p></section>';
+  h += '<section class="card pad stack" style="flex:1 1 480px;min-width:0" aria-label="科目表"><div><h2 class="h">科目表</h2><span class="sub">只有末级科目能用在分录里。「辅助核算」决定这个科目要不要填部门或个人。</span></div>' +
+    '<div class="actions"><button class="btn sm" type="button" data-act="ac-import">从 Excel 导入科目表</button><span class="sub">第一行是表头，需要有「科目编码」和「科目名称」两列，可选「辅助核算」列（填 部门 或 个人）</span></div>' +
+    (vUi.acctMsg ? '<div class="status-ok">' + esc(vUi.acctMsg) + '</div>' : '') +
+    '<div class="tbl-wrap" style="max-height:520px;overflow:auto"><table class="rtbl" style="min-width:440px"><thead><tr><th>编码</th><th>名称</th><th>辅助核算</th><th></th></tr></thead><tbody>' +
+    A.accounts.slice().sort(function(a, b){ return a.code.localeCompare(b.code); }).map(function(a){
+      var lv = (a.code.length - 4) / 2;
+      return '<tr><td class="mono">' + esc(a.code) + '</td><td style="padding-left:' + (8 + Math.max(0, lv) * 16) + 'px">' + esc(a.name) + (isLeaf(a.code) ? '' : ' <span class="sub">（上级）</span>') + '</td>' +
+        '<td><select class="inp acx" data-code="' + esc(a.code) + '" aria-label="辅助核算" style="width:auto;height:30px"><option value="">无</option><option value="dept"' + (a.aux === 'dept' ? ' selected' : '') + '>部门</option><option value="person"' + (a.aux === 'person' ? ' selected' : '') + '>个人</option></select></td>' +
+        '<td style="text-align:right"><button class="linkbtn muted" type="button" data-act="ac-del" data-code="' + esc(a.code) + '">删除</button></td></tr>';
+    }).join('') + '</tbody></table></div>' +
+    '<div class="fgrid"><label class="fld" for="ac-code">科目编码<input id="ac-code" class="mono" placeholder="例如 660205"></label><label class="fld" for="ac-name">科目名称<input id="ac-name" placeholder="例如 会议费"></label>' +
+    '<label class="fld" for="ac-aux">辅助核算<select id="ac-aux"><option value="">无</option><option value="dept">部门</option><option value="person">个人</option></select></label></div>' +
+    '<div class="actions"><button class="btn sm" type="button" data-act="ac-add">添加科目</button><button class="linkbtn muted grow" type="button" data-act="ac-reset">恢复演示科目和规则</button></div></section></div>';
+  return h;
+}
+/* U8 连接 */
+function viewU8(){
+  var c = vUi.u8 || {mode:'demo'};
+  var f = function(id, label, val, ph, cls){ return '<label class="fld' + (cls || '') + '" for="u8-' + id + '">' + label + '<input id="u8-' + id + '" class="mono" value="' + esc(val || '') + '" placeholder="' + esc(ph || '') + '"></label>'; };
+  var h = '<div class="cols"><section class="card pad stack" style="flex:999 1 520px;min-width:0" aria-label="U8 连接"><h2 class="h">连接用友 U8</h2>' +
+    '<div class="fgrid"><label class="fld wide" for="u8-mode">连接方式<select id="u8-mode"><option value="demo"' + (c.mode !== 'openapi' ? ' selected' : '') + '>演示环境（软件内置模拟 U8，不连接真实 U8）</option><option value="openapi"' + (c.mode === 'openapi' ? ' selected' : '') + '>正式环境：用友 U8 开放平台（OpenAPI）</option></select></label>' +
+    f('server', c.mode === 'openapi' ? '开放平台地址' : '服务器地址', c.server, c.mode === 'openapi' ? 'https://api.yonyouup.com' : 'http://u8-demo.local', ' wide') +
+    f('account', '账套号', c.account, '001') + f('year', '会计年度', c.year, '2026') + f('operator', '制单人（操作员）', c.operator, '例如 demo') + f('word', '凭证类别', c.word, '记');
+  if (c.mode === 'openapi'){
+    h += f('fromAccount', '企业账号（from_account）', c.fromAccount, '') + f('toAccount', '目标账号（to_account）', c.toAccount, '') + f('appKey', 'AppKey', c.appKey, '') +
+      '<label class="fld" for="u8-appSecret">AppSecret<input id="u8-appSecret" type="password" class="mono" placeholder="' + (c.hasSecret ? '已保存，不修改就留空' : '') + '"></label>';
+  }
+  h += '</div><div class="actions"><button class="btn lg primary" type="button" data-act="u8-test"' + (vUi.u8Testing ? ' disabled' : '') + '>' + (vUi.u8Testing ? '<span class="spin"></span>正在连接…' : '保存并测试连接') + '</button></div>';
+  if (vUi.u8Status) h += '<div class="' + (vUi.u8Status.ok ? 'status-ok' : 'status-bad') + '" role="status">' + esc(vUi.u8Status.msg) + '</div>';
+  h += '</section><aside class="col-side"><section class="card pad stack"><h2 class="h">说明</h2><div class="help">' +
+    (c.mode === 'openapi' ? '<p>正式环境按用友 U8 开放平台的接口传凭证。需要客户的 IT 或用友服务商：</p><ol><li>开通 U8 开放平台（OpenAPI），提供 AppKey、AppSecret、企业账号</li><li>确认凭证类别、科目编码、部门和人员编码与这里一致</li><li>先在测试账套试传几张，核对无误再切到正式账套</li></ol><p>这部分没有在真实 U8 上联调过，第一次接入请预留联调时间。</p>'
+      : '<p>演示环境：凭证传到软件内置的模拟 U8，保存在这台电脑上，会返回凭证号，也能打开查看。</p><p>演示时可以这样说明：「这是模拟用友 U8 的演示环境。接到真实 U8，需要开通 U8 开放平台接口，把地址和密钥填到这里，再用测试账套联调一次。」</p>') +
+    '</div></section></aside></div>';
+  return h;
+}
+function u8Form(){
+  var g = function(k){ var e = $('#u8-' + k); return e ? e.value.trim() : undefined; };
+  var o = {mode: g('mode')};
+  ['server','account','year','operator','word','fromAccount','toAccount','appKey','appSecret'].forEach(function(k){ var v = g(k); if (v !== undefined) o[k] = v; });
+  return o;
+}
+
+/* 凭证查看（模拟 U8 返回的凭证） */
+function showVoucher(v){
+  var d = 0, c = 0;
+  v.lines.forEach(function(l){ if (l.dc === 'D') d += num(l.amount) || 0; else c += num(l.amount) || 0; });
+  var bg = document.createElement('div');
+  bg.className = 'modal-bg'; bg.id = 'v-viewer';
+  bg.innerHTML = '<div class="modal" role="dialog" aria-modal="true" aria-labelledby="vv-title" style="width:min(920px,100%)"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><h2 id="vv-title">记账凭证</h2>' + u8Badge() + '</div>' +
+    '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:13px"><span>' + esc(v.u8 ? v.u8.display.replace('-', ' 字 ') + ' 号' : '') + '</span><span>制单日期：' + esc(v.date) + '</span><span>附单据数：' + v.invIds.length + '</span></div>' +
+    '<div class="tbl-wrap"><table class="tbl" style="min-width:760px"><thead><tr><th>摘要</th><th>科目名称</th><th>辅助项</th><th class="num">借方金额</th><th class="num">贷方金额</th></tr></thead><tbody>' +
+    v.lines.map(function(l){ return '<tr style="cursor:default"><td>' + esc(l.summary) + '</td><td><span class="mono">' + esc(l.code) + '</span> ' + esc(fullName(l.code)) + '</td><td>' + esc([l.dept, l.person && empById(l.person) ? empById(l.person).name : ''].filter(Boolean).join(' / ')) + '</td><td class="num mono">' + (l.dc === 'D' ? fmtN(num(l.amount)) : '') + '</td><td class="num mono">' + (l.dc === 'C' ? fmtN(num(l.amount)) : '') + '</td></tr>'; }).join('') +
+    '<tr style="cursor:default"><td colspan="3"><b>合计：' + rmbUpper(r2(d)) + '</b></td><td class="num mono"><b>' + fmtN(r2(d)) + '</b></td><td class="num mono"><b>' + fmtN(r2(c)) + '</b></td></tr></tbody></table></div>' +
+    '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:13px" class="muted"><span>制单：' + esc((vUi.u8 && vUi.u8.operator) || '') + '</span><span>U8 状态：' + esc(v.u8 && v.u8.status || '') + '（需在 U8 里审核、记账）</span><span>传入时间：' + esc(fmtDateTime(v.postedAt)) + '</span></div>' +
+    '<div class="actions"><button class="btn lg grow" type="button" data-act="vv-close">关闭</button></div></div>';
+  document.body.appendChild(bg);
+}
+
+/* 确认时：把改过的科目存成规则 */
+function learnCandidates(v){
+  var out = [];
+  v.lines.forEach(function(l, i){
+    if (l.kind !== 'exp' || !l.invId) return;
+    var inv = findInv(l.invId); if (!inv) return;
+    var r = matchRule(inv), gen = r ? r.code : '';
+    if (l.code && l.code !== gen) out.push({i:i, inv:inv, from:gen, to:l.code, dept:(employeeOf(inv) || {}).dept || ''});
+  });
+  return out;
+}
+function openLearn(v, cands){
+  var bg = document.createElement('div');
+  bg.className = 'modal-bg'; bg.id = 'learn-modal';
+  bg.innerHTML = '<div class="modal" role="dialog" aria-modal="true" aria-labelledby="lm-title" style="width:min(640px,100%)"><h2 id="lm-title">以后同类发票也这样记吗？</h2><p class="note">你改了下面这些发票的科目。可以把改法存成规则，以后同类发票自动这样记；只是这一张特殊的，选「只改这一张」。</p>' +
+    cands.map(function(c, n){
+      return '<div class="card pad stack" style="gap:6px"><div style="font-size:13px"><b>' + esc(c.inv.f.seller || '') + '</b> · ' + esc(c.inv.f.cat) + (c.dept ? ' · ' + esc(c.dept) : '') + '</div><div class="sub">' + esc(c.from ? c.from + ' ' + fullName(c.from) : '（原来没有科目）') + ' → <b>' + esc(c.to + ' ' + fullName(c.to)) + '</b></div>' +
+        '<label class="fld" for="lm-' + n + '">存成规则<select id="lm-' + n + '"><option value="">只改这一张</option><option value="seller">以后销售方「' + esc(c.inv.f.seller || '') + '」的发票都这样记</option>' +
+        (c.dept ? '<option value="dept">以后「' + esc(c.dept) + '」的「' + esc(c.inv.f.cat) + '」发票都这样记</option>' : '') + '<option value="cat">以后所有「' + esc(c.inv.f.cat) + '」发票都这样记</option></select></label></div>';
+    }).join('') +
+    '<div class="actions"><button class="btn lg" type="button" data-act="lm-cancel">取消</button><button class="btn lg primary grow" type="button" data-act="lm-ok" data-v="' + v.key + '">确认分录</button></div></div>';
+  document.body.appendChild(bg);
+  vUi.learn = {key:v.key, cands:cands};
+}
+function doConfirm(v){
+  v.status = 'confirmed'; v.confirmedAt = new Date().toISOString(); v.stale = false;
+  if (vouchers.indexOf(v) < 0) vouchers.push(v);
+  vlog(v, '确认分录');
+  save(); render(); toast('已确认「' + v.personLabel + '」的分录，可以生成凭证了');
+}
+function payload(v){
+  return {
+    externalId: v.id, date: v.date, word: (vUi.u8 && vUi.u8.word) || '记', maker: (vUi.u8 && vUi.u8.operator) || '', attachments: v.invIds.length,
+    entries: v.lines.map(function(l){ var e = l.person ? empById(l.person) : null; return {summary:l.summary, code:l.code, name:fullName(l.code), debit: l.dc === 'D' ? r2(num(l.amount)) : 0, credit: l.dc === 'C' ? r2(num(l.amount)) : 0, dept:l.dept || '', person: e ? e.name : ''}; })
+  };
+}
+function postVoucher(v){
+  vUi.posting[v.key] = true; v.lastError = ''; render();
+  return window.api.u8Post(payload(v)).then(function(r){
+    delete vUi.posting[v.key];
+    if (r && r.ok){
+      v.status = 'posted'; v.u8 = r.data; v.postedAt = new Date().toISOString(); vlog(v, '生成凭证 ' + r.data.display);
+      v.invIds.forEach(function(id){ var i = findInv(id); if (i) i.voucher = {key:v.key, display:r.data.display}; });
+      toast('已生成凭证 ' + r.data.display);
+    } else { v.lastError = '生成失败：' + ((r && r.message) || '未知错误'); }
+    save(); render();
+  });
+}
+function exportVouchers(){
+  if (!window.XLSX) return;
+  var S = voucherState(), rows = [['凭证日期','凭证字','凭证号','附单据数','摘要','科目编码','科目名称','借方金额','贷方金额','部门','个人','报销人','状态']];
+  S.posted.forEach(function(v){ v.lines.forEach(function(l){ var e = l.person ? empById(l.person) : null; rows.push([v.date, v.u8 ? v.u8.word : '', v.u8 ? v.u8.no : '', v.invIds.length, l.summary, l.code, fullName(l.code), l.dc === 'D' ? r2(num(l.amount)) : '', l.dc === 'C' ? r2(num(l.amount)) : '', l.dept || '', e ? e.name : '', v.personLabel, '已生成']); }); });
+  var XL = window.XLSX, wb = XL.utils.book_new(), ws = XL.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [12,6,8,8,40,12,28,12,12,10,10,10,8].map(function(w){ return {wch:w}; });
+  XL.utils.book_append_sheet(wb, ws, '凭证清单');
+  var d = new Date();
+  window.api.saveFile('凭证清单_' + dayOf(d).replace(/-/g, '') + '.xlsx', new Uint8Array(XL.write(wb, {type:'array', bookType:'xlsx'}))).then(function(r){ if (r && r.ok && r.data.saved) toast('已导出 ' + (rows.length - 1) + ' 行分录'); });
+}
+function findDraft(key){ var S = voucherState(); return S.drafts.concat(S.confirmed, S.posted).filter(function(v){ return v.key === key; })[0]; }
+function voucherAction(act, t){
+  var key = t.getAttribute('data-v'), v = key ? findDraft(key) : null;
+  if (act === 'vl-add' && v){ storeDraft(v).lines.push({dc:'D', code:'', summary:'', amount:null, dept:v.dept || '', person:'', kind:'manual', rule:'手动添加'}); vlog(v, '加一行'); save(); render(); return; }
+  if (act === 'vl-del' && v){ var i = Number(t.getAttribute('data-i')); storeDraft(v); vlog(v, '删除第 ' + (i + 1) + ' 行：' + v.lines[i].code + ' ' + v.lines[i].amount); v.lines.splice(i, 1); save(); render(); return; }
+  if (act === 'v-reset' && v){ vouchers = vouchers.filter(function(x){ return x !== v; }); save(); render(); toast('已按规则重新生成'); return; }
+  if (act === 'v-confirm' && v){
+    if (validateV(v).errs.length) return;
+    var cands = learnCandidates(v);
+    if (cands.length) openLearn(v, cands); else doConfirm(v);
+    return;
+  }
+  if (act === 'lm-cancel'){ var m = $('#learn-modal'); if (m) m.remove(); vUi.learn = null; return; }
+  if (act === 'lm-ok' && vUi.learn){
+    var L = vUi.learn, vv = findDraft(L.key), saved = 0;
+    L.cands.forEach(function(c, n){
+      var how = ($('#lm-' + n) || {}).value;
+      if (!how) return;
+      var r = {id:'r' + uid(), code:c.to};
+      if (how === 'seller') r.seller = c.inv.f.seller;
+      if (how === 'dept'){ r.dept = c.dept; r.cat = c.inv.f.cat; }
+      if (how === 'cat') r.cat = c.inv.f.cat;
+      acct().rules = acct().rules.filter(function(x){ return !(x.seller === r.seller && x.dept === r.dept && x.cat === r.cat); });
+      acct().rules.push(r); saved++;
+    });
+    var lm = $('#learn-modal'); if (lm) lm.remove(); vUi.learn = null;
+    if (vv){ if (saved) vlog(vv, '存了 ' + saved + ' 条规则'); doConfirm(vv); }
+    if (saved) toast('已保存 ' + saved + ' 条规则，以后同类发票会自动这样记');
+    return;
+  }
+  if (act === 'v-unconfirm' && v){ v.status = 'draft'; v.edited = true; vlog(v, '撤回确认'); save(); render(); return; }
+  if (act === 'v-post' && v){ postVoucher(v); return; }
+  if (act === 'v-post-all'){
+    var list = voucherState().confirmed;
+    list.reduce(function(p, x){ return p.then(function(){ return postVoucher(x); }); }, Promise.resolve());
+    return;
+  }
+  if (act === 'v-view' && v){ showVoucher(v); return; }
+  if (act === 'vv-close'){ var vw = $('#v-viewer'); if (vw) vw.remove(); return; }
+  if (act === 'v-export'){ exportVouchers(); return; }
+  if (act === 'u8-test'){
+    var form = u8Form();
+    vUi.u8Testing = true; vUi.u8Status = null; render();
+    window.api.u8Save(form).then(function(r){ if (r && r.ok) vUi.u8 = r.data; return window.api.u8Test(); }).then(function(r){
+      vUi.u8Status = r && r.ok ? {ok:true, msg:r.data.msg} : {ok:false, msg:'连接失败：' + ((r && r.message) || '未知错误')};
+    }).then(function(){ vUi.u8Testing = false; render(); });
+    return;
+  }
+  var A = acct();
+  if (act === 'ar-add'){
+    var code = $('#ar-code').value.trim(), r = {id:'r' + uid(), seller:$('#ar-seller').value.trim(), dept:$('#ar-dept').value.trim(), cat:$('#ar-cat').value, code:code};
+    if (!r.seller && !r.dept && !r.cat){ toast('至少填一个条件：销售方、部门或类别'); return; }
+    if (!accByCode(code) || !isLeaf(code)){ toast('请选择科目表里的末级科目'); return; }
+    ['seller','dept','cat'].forEach(function(k){ if (!r[k]) delete r[k]; });
+    A.rules.push(r); save(); render(); toast('已添加规则'); return;
+  }
+  if (act === 'ar-del'){ A.rules = A.rules.filter(function(x){ return x.id !== t.getAttribute('data-id'); }); save(); render(); return; }
+  if (act === 'ac-add'){
+    var c2 = $('#ac-code').value.trim(), n2 = $('#ac-name').value.trim();
+    if (!/^\d{4,}$/.test(c2) || !n2){ toast('请填写科目编码（数字）和名称'); return; }
+    if (accByCode(c2)){ toast('科目 ' + c2 + ' 已经有了'); return; }
+    A.accounts.push({code:c2, name:n2, aux:$('#ac-aux').value}); save(); render(); toast('已添加科目 ' + c2 + ' ' + n2); return;
+  }
+  if (act === 'ac-del'){ var dc = t.getAttribute('data-code'); A.accounts = A.accounts.filter(function(a){ return a.code !== dc; }); save(); render(); return; }
+  if (act === 'ac-reset'){ cfg.acct = defaultAcct(); save(); render(); toast('已恢复演示科目和规则'); return; }
+  if (act === 'ac-import'){ $('#acctFile').click(); return; }
+}
+function voucherChange(t){
+  if (t.classList.contains('vl')){
+    var v = findDraft(t.getAttribute('data-v')), i = Number(t.getAttribute('data-i')), f = t.getAttribute('data-f');
+    if (!v || !v.lines[i]) return true;
+    storeDraft(v);
+    var old = v.lines[i][f], val = t.value;
+    if (f === 'amount') val = num(val);
+    if (f === 'code') val = val.trim().split(/\s/)[0];
+    v.lines[i][f] = val;
+    vlog(v, '第 ' + (i + 1) + ' 行 ' + ({dc:'借贷', code:'科目', summary:'摘要', dept:'部门', person:'个人', amount:'金额'}[f]) + '：' + (old == null ? '' : old) + ' → ' + (val == null ? '' : val));
+    save(); render(); return true;
+  }
+  if (t.classList.contains('vdate')){ var vd = findDraft(t.getAttribute('data-v')); if (vd && vd.status === 'draft'){ storeDraft(vd).date = t.value; vlog(vd, '凭证日期改为 ' + t.value); save(); } return true; }
+  if (t.classList.contains('acx')){ var a = accByCode(t.getAttribute('data-code')); if (a){ a.aux = t.value; save(); render(); } return true; }
+  if (t.classList.contains('acs')){ acct()[t.getAttribute('data-k')] = t.type === 'checkbox' ? t.checked : t.value.trim(); save(); render(); return true; }
+  if (t.id === 'u8-mode'){ var form = u8Form(); window.api.u8Save(form).then(function(r){ if (r && r.ok) vUi.u8 = r.data; vUi.u8Status = null; render(); }); return true; }
+  if (t.id === 'acctFile'){
+    var file = t.files && t.files[0]; t.value = '';
+    if (!file || !window.XLSX) return true;
+    file.arrayBuffer().then(function(buf){
+      var wb = window.XLSX.read(buf, {type:'array'}), rows = window.XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header:1, raw:false});
+      var head = (rows[0] || []).map(function(x){ return String(x || ''); });
+      var ci = head.findIndex(function(x){ return /编码|代码/.test(x); }), ni = head.findIndex(function(x){ return /名称/.test(x); }), ai = head.findIndex(function(x){ return /辅助/.test(x); });
+      if (ci < 0 || ni < 0){ toast('没找到「科目编码」和「科目名称」两列'); return; }
+      var list = [];
+      rows.slice(1).forEach(function(r){
+        var c = String(r[ci] || '').trim(), n = String(r[ni] || '').trim().split(/[-－\\/]/).pop();
+        if (!/^\d{4,}$/.test(c) || !n) return;
+        var ax = ai >= 0 ? String(r[ai] || '') : '';
+        list.push({code:c, name:n, aux: /部门/.test(ax) ? 'dept' : /个人|职员|人员/.test(ax) ? 'person' : ''});
+      });
+      if (!list.length){ toast('表里没有读到科目'); return; }
+      acct().accounts = list; vUi.acctMsg = '已导入 ' + list.length + ' 个科目。请检查分录规则里的科目编码是否还存在。'; save(); render();
+    });
+    return true;
+  }
+  return false;
+}
+
 /* ---------- 事件 ---------- */
 function findInv(id){ return invoices.filter(function(i){ return i.id === id; })[0]; }
 document.addEventListener('click', function(e){
@@ -1224,6 +1650,7 @@ document.addEventListener('click', function(e){
   if (act === 'pick') $('#fileInput').click();
   else if (/^mail-/.test(act)) mailAction(act, t);
   else if (/^st-/.test(act)) staffAction(act, t);
+  else if (/^(v|vl|vv|lm|ar|ac|u8)-/.test(act)) voucherAction(act, t);
   else if (act === 'hist-range') histRange(t.getAttribute('data-r'));
   else if (act === 'hist-export'){ var HR = histMatches(); exportList(HR.list, (histUi.who.trim() || '全部') + (histUi.from || histUi.to ? '_' + (histUi.from || '') + '至' + (histUi.to || '') : '')); }
   else if (act === 'ex-cancel') closeExport();
@@ -1254,7 +1681,7 @@ document.addEventListener('click', function(e){
   }
   else if (act === 'co-add'){ cfg.companies.push({name:'', taxId:''}); save(); render(); var ins = $$('[data-co][data-key="name"]'); if (ins.length) ins[ins.length-1].focus(); }
   else if (act === 'co-del'){ cfg.companies.splice(Number(t.getAttribute('data-i')), 1); save(); render(); }
-  else if (act === 'reset-cfg'){ cfg = defaultCfg(); save(); render(); toast('已恢复默认规则'); }
+  else if (act === 'reset-cfg'){ var keep = {employees:cfg.employees, acct:cfg.acct, recentSenders:cfg.recentSenders}; cfg = Object.assign(defaultCfg(), keep); save(); render(); toast('已恢复默认审核规则'); }
 });
 document.addEventListener('keydown', function(e){
   var tr = e.target.closest && e.target.closest('tr[data-open]');
@@ -1280,6 +1707,7 @@ document.addEventListener('change', function(e){
     save(); refreshReview(inv);
     return;
   }
+  if (voucherChange(t)) return;
   if (t.id === 'person-filter'){ ui.person = t.value; render(); return; }
   if (t.id === 'rv-emp'){ var ri = findInv(t.getAttribute('data-id')); if (ri){ ri.employeeId = t.value || null; save(); render(); toast(t.value ? '报销人已改为「' + empById(t.value).name + '」' : '已取消指定报销人'); } return; }
   if (t.hasAttribute && t.hasAttribute('data-addto')){
@@ -1399,7 +1827,7 @@ function exportList(list, label){
 }
 $('#uploadBtn').addEventListener('click', function(){ $('#fileInput').click(); });
 $('#exportBtn').addEventListener('click', openExport);
-document.addEventListener('keydown', function(e){ if (e.key === 'Escape') closeExport(); });
+document.addEventListener('keydown', function(e){ if (e.key === 'Escape'){ closeExport(); ['#v-viewer', '#learn-modal'].forEach(function(q){ var m = $(q); if (m) m.remove(); }); vUi.learn = null; } });
 
 /* ---------- 自动更新 ---------- */
 var appVer = '', isPortable = false, upd = null;
@@ -1422,7 +1850,8 @@ Promise.all([
   window.api.info().then(function(r){ if (r && r.ok) dataDir = r.data.dataDir; }),
   window.api.getUpdate().then(function(r){ if (r && r.ok){ appVer = r.data.version; isPortable = r.data.portable; if (r.data.update){ upd = r.data.update; renderUpdate(); } } }),
   initAI(),
-  loadMailInfo()
+  loadMailInfo(),
+  loadU8()
 ]).then(function(res){
   if (!res[0]){ invoices = makeSamples(); save(); }
   render();

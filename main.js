@@ -320,6 +320,33 @@ ipcMain.handle('mail:import', wrap(async ({ scanId, ids }) => {
 }));
 ipcMain.handle('mail:openLink', wrap(async (url) => { if (/^https?:\/\//i.test(String(url))) await shell.openExternal(String(url)); return true; }));
 
+/* ---------------- 用友 U8 ---------------- */
+const u8 = require('./u8.js');
+const U8_SETTINGS = () => path.join(dataDir(), 'u8-settings.json');
+function u8Cfg() {
+  const s = readJson(U8_SETTINGS(), {});
+  return {
+    mode: s.mode === 'openapi' ? 'openapi' : 'demo',
+    server: s.server || (s.mode === 'openapi' ? '' : 'http://u8-demo.local'), account: s.account || '001', year: s.year || String(new Date().getFullYear()),
+    operator: s.operator || '', word: s.word || '记', fromAccount: s.fromAccount || '', toAccount: s.toAccount || '', appKey: s.appKey || '',
+    appSecret: decrypt(s.appSecret)
+  };
+}
+function u8Public() { const c = u8Cfg(); const out = Object.assign({}, c, { hasSecret: !!c.appSecret }); delete out.appSecret; return out; }
+ipcMain.handle('u8:get', wrap(async () => u8Public()));
+ipcMain.handle('u8:save', wrap(async (input) => {
+  const old = readJson(U8_SETTINGS(), {});
+  const out = {};
+  ['mode', 'server', 'account', 'year', 'operator', 'word', 'fromAccount', 'toAccount', 'appKey'].forEach((k) => { out[k] = String((input && input[k]) != null ? input[k] : (old[k] || '')).trim(); });
+  out.appSecret = old.appSecret || null;
+  if (input && typeof input.appSecret === 'string' && input.appSecret.trim()) out.appSecret = encrypt(input.appSecret.trim());
+  writeJsonAtomic(U8_SETTINGS(), out);
+  return u8Public();
+}));
+ipcMain.handle('u8:test', wrap(async () => u8.test(u8Cfg(), net)));
+ipcMain.handle('u8:post', wrap(async (v) => u8.post(u8Cfg(), v, dataDir(), net)));
+ipcMain.handle('u8:demoList', wrap(async () => u8.demoList(dataDir())));
+
 ipcMain.handle('app:openDataDir', wrap(async () => { await shell.openPath(dataDir()); return true; }));
 ipcMain.handle('app:info', wrap(async () => ({ dataDir: dataDir(), version: app.getVersion() })));
 

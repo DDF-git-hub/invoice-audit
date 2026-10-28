@@ -281,6 +281,76 @@ fs.mkdirSync(out, { recursive: true });
       for (let k = 0; k < 40 && !f3; k++) { const fl = fs.readdirSync(exportDir); if (fl.length > before) f3 = fl.find((n) => /张三_/.test(n)); await page.waitForTimeout(250); }
       chk(!!f3, '导出查询结果：' + (f3 || '没有生成文件'));
       if (f3) { const sum3 = XLSX.utils.sheet_to_json(XLSX.readFile(path.join(exportDir, f3)).Sheets['发票汇总']); chk(sum3.length === 5, '查询结果导出 ' + sum3.length + ' 张'); }
+
+      // ---------- 凭证 ----------
+      console.log('\n[凭证 → 用友 U8（演示环境）]');
+      const ledNow = () => JSON.parse(fs.readFileSync(path.join(ud, 'ledger.json'), 'utf8'));
+      const approve = async (file, sender) => {
+        const inv = ledNow().invoices.find((i) => i.file === file && (sender ? i.sender === sender : !i.sender));
+        await page.evaluate((id) => { location.hash = 'review-' + id; }, inv.id);
+        await page.waitForSelector('[data-dec="approved"]');
+        await page.click('[data-dec="approved"]');
+        await page.waitForTimeout(500);
+        return inv;
+      };
+      await approve('餐费.pdf', 'zhangsan@test.local');
+      await approve('发票.pdf', 'zhangsan@test.local');
+      await page.evaluate(() => { location.hash = 'voucher'; });
+      await page.waitForSelector('section[aria-label="凭证 张三"]');
+      const card = 'section[aria-label="凭证 张三"]';
+      const lines = await page.evaluate((c) => Array.from(document.querySelectorAll(c + ' tr.vline')).map((tr) => ({
+        dc: tr.querySelector('[data-f="dc"]').value, code: tr.querySelector('[data-f="code"]').value, amount: tr.querySelector('[data-f="amount"]').value, dept: tr.querySelector('[data-f="dept"]').value })), card);
+      console.log('    ' + lines.map((l) => (l.dc === 'D' ? '借 ' : '贷 ') + l.code + ' ' + l.amount + (l.dept ? ' [' + l.dept + ']' : '')).join(' | '));
+      const want = [['D', '660104', '1860.00'], ['D', '660201', '1592.92'], ['D', '22210101', '207.08'], ['C', '224101', '3660.00']];
+      chk(lines.length === 4 && want.every((w) => lines.some((l) => l.dc === w[0] && l.code === w[1] && l.amount === w[2])), '张三两张发票合成一张凭证 4 行：招待费（市场部规则）、办公费、进项税、应付员工');
+      chk(await page.evaluate((c) => /借贷平衡/.test(document.querySelector(c).innerText), card), '借贷平衡、辅助核算齐全');
+      await page.screenshot({ path: path.join(out, '13-凭证待确认.png'), fullPage: true });
+      // 改科目 → 确认时存成规则
+      const codeInput = page.locator(card + ' tr.vline [data-f="code"]').first();
+      await codeInput.fill('660299');
+      await codeInput.dispatchEvent('change');
+      await page.waitForTimeout(300);
+      await page.click(card + ' [data-act="v-confirm"]');
+      await page.waitForSelector('#lm-0');
+      await page.screenshot({ path: path.join(out, '14-存成规则.png') });
+      await page.selectOption('#lm-0', 'seller');
+      await page.click('[data-act="lm-ok"]');
+      await page.waitForTimeout(800);
+      const rule = (ledNow().cfg.acct.rules || []).find((r) => r.seller === '上海小南国餐饮有限公司');
+      chk(rule && rule.code === '660299', '改法存成了规则：销售方「上海小南国餐饮有限公司」→ 660299');
+      const vz = ledNow().vouchers.find((v) => v.personLabel === '张三');
+      chk(vz && vz.status === 'confirmed' && vz.log.some((l) => /科目：660104 → 660299/.test(l.text)), '凭证已确认，改动留了记录');
+      // U8 连接（演示环境）
+      await page.evaluate(() => { location.hash = 'voucher-u8'; });
+      await page.waitForSelector('#u8-operator');
+      await page.fill('#u8-operator', 'demo');
+      await page.click('[data-act="u8-test"]');
+      await page.waitForSelector('.status-ok, .status-bad', { timeout: 10000 });
+      const u8msg = await page.evaluate(() => (document.querySelector('.status-ok') || document.querySelector('.status-bad')).textContent);
+      chk(/演示环境/.test(u8msg), 'U8 测试连接：' + u8msg);
+      await page.screenshot({ path: path.join(out, '15-U8连接.png'), fullPage: true });
+      // 生成凭证
+      await page.evaluate(() => { location.hash = 'voucher-done'; });
+      await page.waitForSelector(card + ' [data-act="v-post"]');
+      await page.click(card + ' [data-act="v-post"]');
+      await page.waitForSelector(card + ' [data-act="v-view"]', { timeout: 10000 });
+      const vp = ledNow().vouchers.find((v) => v.personLabel === '张三');
+      chk(vp.status === 'posted' && vp.u8 && /^记-0001$/.test(vp.u8.display), '生成凭证，拿回 U8 凭证号：' + (vp.u8 && vp.u8.display));
+      const demo = JSON.parse(fs.readFileSync(path.join(ud, 'u8-demo.json'), 'utf8'));
+      const dv = demo.vouchers[0] || { entries: [] };
+      const dsum = dv.entries.reduce((a, e) => a + e.debit, 0), csum = dv.entries.reduce((a, e) => a + e.credit, 0);
+      chk(demo.vouchers.length === 1 && dv.entries.length === 4 && Math.abs(dsum - 3660) < 0.001 && Math.abs(csum - 3660) < 0.001 && dv.maker === 'demo', '演示 U8 收到 1 张凭证：4 行，借贷各 3,660.00，制单人 demo');
+      chk(ledNow().invoices.filter((i) => i.voucher && i.voucher.display === '记-0001').length === 2, '两张发票都标上了凭证号');
+      await page.click(card + ' [data-act="v-view"]');
+      await page.waitForSelector('#v-viewer');
+      await page.screenshot({ path: path.join(out, '16-凭证查看.png') });
+      await page.click('[data-act="vv-close"]');
+      // 李四没有部门：不能确认
+      await approve('sdp-geren.pdf');
+      await page.evaluate(() => { location.hash = 'voucher'; });
+      await page.waitForSelector('section[aria-label="凭证 李四"]');
+      const li = await page.evaluate(() => { const c = document.querySelector('section[aria-label="凭证 李四"]'); return { text: c.innerText, disabled: c.querySelector('[data-act="v-confirm"]').disabled }; });
+      chk(/需要部门/.test(li.text) && li.disabled, '李四没有登记部门：提示「需要部门」，不能确认');
     }
   }
 

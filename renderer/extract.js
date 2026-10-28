@@ -168,7 +168,8 @@
   var USCC_CH = '0123456789ABCDEFGHJKLMNPQRTUWXY';
   var USCC_W = [1, 3, 9, 27, 19, 26, 16, 17, 20, 29, 25, 13, 8, 24, 10, 30, 28];
   function usccValid(id) {
-    if (!/^[0-9A-HJ-NPQRTUWXY]{18}$/.test(id)) return false;
+    // 第 1 位登记管理部门、第 2 位机构类别、第 3-8 位行政区划（数字）
+    if (!/^[1-9ANY][0-9A-HJ-NPQRTUWXY]\d{6}[0-9A-HJ-NPQRTUWXY]{10}$/.test(id)) return false;
     var sum = 0;
     for (var i = 0; i < 17; i++) sum += USCC_CH.indexOf(id[i]) * USCC_W[i];
     var c = 31 - sum % 31;
@@ -179,6 +180,20 @@
   var CONFUSE = { '0': 'ODQ', 'O': '0', 'D': '0', 'Q': '0', '1': 'IL7T', 'I': '1', 'L': '1', '7': '1', 'T': '1', '2': 'Z', 'Z': '2', '5': 'S', 'S': '5', '8': 'B3', 'B': '8', '3': '8', '6': 'G', 'G': '6', 'U': 'V', 'V': 'U' };
   function fixTaxId(id) {
     id = String(id || '').toUpperCase().replace(/\s/g, '');
+    if (id.length === 19) {
+      // 多认出了一个字符：逐个删掉试校验位
+      var mapc = function (x) { return x.replace(/O/g, '0').replace(/I/g, '1').replace(/Z/g, '2').replace(/S/g, '5'); };
+      var mid = mapc(id), del = [], dup = [];
+      for (var d = 0; d < 19; d++) {
+        var c18 = mid.slice(0, d) + mid.slice(d + 1);
+        if (!usccValid(c18)) continue;
+        if (del.indexOf(c18) < 0) del.push(c18);
+        // 和相邻字符相同（如 0O、1I 被认成两个字），最可能是重复识别
+        if ((mid[d] === mid[d - 1] || mid[d] === mid[d + 1]) && dup.indexOf(c18) < 0) dup.push(c18);
+      }
+      var pick = dup.length === 1 ? dup[0] : del.length === 1 ? del[0] : '';
+      return pick ? { id: pick, fixed: true } : { id: id, fixed: false, invalid: true };
+    }
     if (id.length !== 18) return { id: id, fixed: false };
     var base = id.replace(/O/g, '0').replace(/I/g, '1').replace(/Z/g, '2').replace(/S/g, '5');
     if (usccValid(base)) return { id: base, fixed: base !== id };
@@ -191,6 +206,22 @@
       }
     }
     return hits.length === 1 ? { id: hits[0], fixed: true } : { id: base, fixed: base !== id, invalid: true };
+  }
+
+  /* ---------- 项目名称 ---------- */
+  var TAX_CLASSES = ['餐饮服务', '住宿服务', '运输服务', '旅客运输服务', '物流辅助服务', '经纪代理服务', '现代服务', '生活服务', '信息技术服务',
+    '电信服务', '邮政服务', '建筑服务', '租赁服务', '研发和技术服务', '广告服务', '会议展览服务', '鉴证咨询服务', '文化创意服务', '商务辅助服务',
+    '计算机外部设备', '计算机配套产品', '计算机', '办公设备', '纸制品', '文具', '日用杂品', '食品', '酒', '非酒精饮料', '汽油', '柴油', '家具',
+    '通信设备', '电子元件', '劳保用品', '印刷品', '图书', '体育用品', '医疗仪器器械', '药品', '服装', '五金'].sort(function (a, b) { return b.length - a.length; });
+  function itemFromCell(cell) {
+    var c = String(cell || '').replace(new RegExp('^[^' + CJK + ']+'), '').replace(/[\d.%¥\s]+$/, '');
+    var m = c.match(new RegExp('^([' + CJK + ']{2,12})[^' + CJK + ']{1,2}([' + CJK + '、]{1,30})'));
+    if (m) return '*' + m[1] + '*' + m[2];
+    c = c.replace(new RegExp('[^' + CJK + '、]', 'g'), '');
+    for (var i = 0; i < TAX_CLASSES.length; i++) {
+      if (c.indexOf(TAX_CLASSES[i]) === 0 && c.length > TAX_CLASSES[i].length) return '*' + TAX_CLASSES[i] + '*' + c.slice(TAX_CLASSES[i].length);
+    }
+    return c.length >= 2 ? c : '';
   }
 
   /* ---------- 名称 ---------- */
@@ -336,13 +367,12 @@
     if (items.length) f.items = items[0] + (items.length > 1 ? '等' : '');
     if (!f.items) {
       // 文字识别常把 * 认成别的符号：取表头下一行的第一栏，并还原成 *类别*名称 的格式
-      for (var ri = 0; ri < rows.length - 1; ri++) {
+      for (var ri = 0; ri < rows.length - 1 && !f.items; ri++) {
         if (!/项目名称|货物或应税|服务名称/.test(rows[ri])) continue;
-        var cell = (rows[ri + 1].split('\t')[0] || '').replace(/[\d.%¥\s]+$/, '');
-        var mm = cell.match(new RegExp('^[^' + CJK + ']{0,2}([' + CJK + ']{2,12})[^' + CJK + ']{1,2}([' + CJK + '、]{1,30})'));
-        if (mm) f.items = '*' + mm[1] + '*' + mm[2];
-        else if (new RegExp('^[' + CJK + ']{2,30}$').test(cell)) f.items = cell;
-        break;
+        for (var rj = ri + 1; rj <= ri + 3 && rj < rows.length && !f.items; rj++) {
+          if (/^合\s*计/.test(rows[rj])) break;
+          f.items = itemFromCell(rows[rj].split('\t')[0]);
+        }
       }
     }
 
@@ -356,6 +386,25 @@
       }
     }
 
+    // 版面里所有通过校验位的统一社会信用代码（文字识别结果先修正常见误认）
+    var valid = [], tr = opts.ocr ? /(?<![0-9A-Z])((?:[0-9A-Z] ?){18,19})(?![0-9A-Z])/g : /(?<![0-9A-Z])([0-9A-Z]{18})(?![0-9A-Z])/g;
+    while ((m = tr.exec(flat))) {
+      var cand = m[1].replace(/ /g, '');
+      if (opts.ocr) cand = fixTaxId(cand).id;
+      if (usccValid(cand) && valid.indexOf(cand) < 0) valid.push(cand);
+    }
+    if (opts.ocr) {
+      ['buyerTax', 'sellerTax'].forEach(function (k) {
+        if (f[k]) { var fx = fixTaxId(f[k]); if (fx.fixed && usccValid(fx.id)) f[k] = fx.id; }
+      });
+    }
+    var bOk = usccValid(f.buyerTax), sOk = usccValid(f.sellerTax);
+    if (valid.length >= 2 && !(bOk && sOk && f.buyerTax !== f.sellerTax)) {
+      // 购买方在前（数电票在左、旧版在上），销售方在后
+      f.buyerTax = valid[0]; f.sellerTax = valid[1];
+    } else if (valid.length === 1 && !bOk && !sOk && f.buyerTax === '' && f.sellerTax === '') {
+      if (!NAME_SUFFIX.test(f.buyer)) f.sellerTax = valid[0];
+    }
     if (opts.ocr) {
       ['buyerTax', 'sellerTax'].forEach(function (k) {
         if (!f[k]) return;

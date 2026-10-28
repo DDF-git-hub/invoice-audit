@@ -39,8 +39,13 @@ fs.mkdirSync(out, { recursive: true });
     const s = await page.evaluate(() => { const p = document.querySelector('.progress'); return p ? p.textContent : ''; }).catch(() => '');
     console.log('  ' + Math.round((Date.now() - t0) / 1000) + 's ' + s.replace(/\s+/g, ' ').trim());
   }, 20000);
-  await page.waitForFunction(() => !document.querySelector('.progress') && !document.querySelector('.chip.idle') && document.querySelectorAll('tr[data-open]').length > 0,
-    null, { timeout: 20 * 60 * 1000, polling: 1000 });
+  // 软件的安全策略不允许 eval，这里用 evaluate 轮询，不用 waitForFunction
+  for (;;) {
+    const done = await page.evaluate(() => !document.querySelector('.progress') && !document.querySelector('.chip.idle') && document.querySelectorAll('tr[data-open]').length > 0);
+    if (done) break;
+    if (Date.now() - t0 > 20 * 60 * 1000) throw new Error('识别超过 20 分钟没有完成');
+    await page.waitForTimeout(1500);
+  }
   clearInterval(timer);
   console.log('识别完成，用时 ' + Math.round((Date.now() - t0) / 1000) + 's');
   await page.waitForTimeout(1500);

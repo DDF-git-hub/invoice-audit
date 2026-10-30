@@ -306,7 +306,9 @@ fs.mkdirSync(out, { recursive: true });
       chk(await page.evaluate((c) => /借贷平衡/.test(document.querySelector(c).innerText), card), '借贷平衡、辅助核算齐全');
       await page.screenshot({ path: path.join(out, '13-凭证待确认.png'), fullPage: true });
       // 改科目 → 确认时存成规则
-      const codeInput = page.locator(card + ' tr.vline [data-vf="code"]').first();
+      // 找招待费那一行（分录顺序跟发票顺序有关，不固定）
+      const zi = await page.evaluate((c) => Array.from(document.querySelectorAll(c + ' tr.vline [data-vf="code"]')).findIndex((x) => x.value === '660104'), card);
+      const codeInput = page.locator(card + ' tr.vline [data-vf="code"]').nth(Math.max(zi, 0));
       await codeInput.fill('660299');
       await codeInput.dispatchEvent('change');
       await page.waitForTimeout(300);

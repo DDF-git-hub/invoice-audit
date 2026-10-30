@@ -1,0 +1,229 @@
+[
+  {
+    "model": "4.0.0",
+    "file": "sdp-canyin-screenshot.png",
+    "ok": 5,
+    "of": 13,
+    "bad": [
+      {
+        "k": "buyer",
+        "got": "上滋商国餐饮有限公司",
+        "want": "上海示例科技有限公司"
+      },
+      {
+        "k": "seller",
+        "got": "上淳示伟技有限公司",
+        "want": "上海小南国餐饮有限公司"
+      },
+      {
+        "k": "tax",
+        "got": null,
+        "want": 105.28
+      },
+      {
+        "k": "total",
+        "got": null,
+        "want": 1860
+      },
+      {
+        "k": "rate",
+        "got": null,
+        "want": 6
+      },
+      {
+        "k": "items",
+        "got": "",
+        "want": "*餐饮服务*餐费"
+      },
+      {
+        "k": "cat",
+        "got": "其他",
+        "want": "餐饮"
+      },
+      {
+        "k": "lines",
+        "got": "0 行",
+        "want": "1 行"
+      }
+    ]
+  },
+  {
+    "model": "4.0.0",
+    "file": "old-zhusu-hd.png",
+    "ok": 12,
+    "of": 14,
+    "bad": [
+      {
+        "k": "items",
+        "got": "*住宿服*住宿费等",
+        "want": "*住宿服务*住宿费"
+      },
+      {
+        "k": "lines",
+        "got": "2 行",
+        "want": "1 行"
+      }
+    ]
+  },
+  {
+    "model": "4.0.0",
+    "file": "sdp-geren-screenshot.png",
+    "ok": 6,
+    "of": 13,
+    "bad": [
+      {
+        "k": "buyer",
+        "got": "滴滴出行科技有限公司",
+        "want": "王磊"
+      },
+      {
+        "k": "seller",
+        "got": "",
+        "want": "滴滴出行科技有限公司"
+      },
+      {
+        "k": "tax",
+        "got": 42.52,
+        "want": 2.52
+      },
+      {
+        "k": "total",
+        "got": 126.5,
+        "want": 86.5
+      },
+      {
+        "k": "rate",
+        "got": null,
+        "want": 3
+      },
+      {
+        "k": "items",
+        "got": "*运输服*客运服务费",
+        "want": "*运输服务*客运服务费"
+      },
+      {
+        "k": "lines[0].name",
+        "got": "*运输服*客运服务费",
+        "want": "*运输服务*客运服务费"
+      }
+    ]
+  },
+  {
+    "model": "4.0.0",
+    "file": "sdp-mingxi-screenshot.png",
+    "ok": 8,
+    "of": 13,
+    "bad": [
+      {
+        "k": "items",
+        "got": "*非金属矿物制品红砖等",
+        "want": "*非金属矿物制品*红砖等"
+      },
+      {
+        "k": "lines[0].name",
+        "got": "*非金属矿物制品红砖",
+        "want": "*非金属矿物制品*红砖"
+      },
+      {
+        "k": "lines[0].unit",
+        "got": "",
+        "want": "块"
+      },
+      {
+        "k": "lines[0].qty",
+        "got": null,
+        "want": 83500
+      },
+      {
+        "k": "lines[1].unit",
+        "got": "m",
+        "want": "m³"
+      }
+    ]
+  },
+  {
+    "model": "4.0.0",
+    "file": "sdp-zhuanpiao-photo.jpg",
+    "ok": 11,
+    "of": 13,
+    "bad": [
+      {
+        "k": "items",
+        "got": "*计算机外部设备“显示器等",
+        "want": "*计算机外部设备*显示器"
+      },
+      {
+        "k": "lines",
+        "got": "2 行",
+        "want": "1 行"
+      }
+    ]
+  },
+  {
+    "model": "4.0.0_best_int",
+    "file": "sdp-canyin-screenshot.png",
+    "ok": 13,
+    "of": 13,
+    "bad": []
+  },
+  {
+    "model": "4.0.0_best_int",
+    "file": "old-zhusu-hd.png",
+    "ok": 14,
+    "of": 14,
+    "bad": []
+  },
+  {
+    "model": "4.0.0_best_int",
+    "file": "sdp-geren-screenshot.png",
+    "ok": 11,
+    "of": 13,
+    "bad": [
+      {
+        "k": "buyer",
+        "got": "王本",
+        "want": "王磊"
+      },
+      {
+        "k": "seller",
+        "got": "滴泣出行科技有限公司",
+        "want": "滴滴出行科技有限公司"
+      }
+    ]
+  },
+  {
+    "model": "4.0.0_best_int",
+    "file": "sdp-mingxi-screenshot.png",
+    "ok": 9,
+    "of": 13,
+    "bad": [
+      {
+        "k": "items",
+        "got": "*非金属矿物制品红砖等",
+        "want": "*非金属矿物制品*红砖等"
+      },
+      {
+        "k": "lines[0].name",
+        "got": "*非金属矿物制品红砖",
+        "want": "*非金属矿物制品*红砖"
+      },
+      {
+        "k": "lines[0].unit",
+        "got": "。",
+        "want": "块"
+      },
+      {
+        "k": "lines[1].unit",
+        "got": "mas",
+        "want": "m³"
+      }
+    ]
+  },
+  {
+    "model": "4.0.0_best_int",
+    "file": "sdp-zhuanpiao-photo.jpg",
+    "ok": 13,
+    "of": 13,
+    "bad": []
+  }
+]

@@ -1,0 +1,48 @@
+
+> invoice-audit-desk@1.7.3 test
+> node test/unit.js
+
+[PDF 文字层]
+  ✓ sdp-canyin.pdf  置信度 0.97
+  ✓ sdp-zhuanpiao.pdf  置信度 0.97
+  ✓ sdp-geren.pdf  置信度 0.97
+  ✓ old-zhusu.pdf  置信度 0.97
+  ✓ sdp-mingxi.pdf  置信度 0.97
+  ✓ rail.pdf  置信度 0.97
+  ✓ old-zhusu-stsong.pdf  置信度 0.97
+[XML / OFD]
+  ✓ sdp-canyin.xml
+  ✓ sdp-zhuanpiao.ofd
+[二维码]
+  ✓ sdp-canyin-screenshot.png
+  ✓ old-zhusu-hd.png
+  ✓ sdp-geren-screenshot.png
+  ✓ sdp-mingxi-screenshot.png
+  ✓ sdp-zhuanpiao-photo.jpg
+
+可用中文模型：4.0.0、4.0.0_best_int
+
+[OCR] 模型：4.0.0（加载 0.5s）
+  ✗ sdp-canyin-screenshot.png  字段 5/13，置信度 0.65，耗时 0.7s
+      buyer: "上滋商国餐饮有限公司" ≠ "上海示例科技有限公司" | seller: "上淳示伟技有限公司" ≠ "上海小南国餐饮有限公司" | tax: null ≠ 105.28 | total: null ≠ 1860 | rate: null ≠ 6 | items: "" ≠ "*餐饮服务*餐费" | cat: "其他" ≠ "餐饮" | lines: "0 行" ≠ "1 行"
+  ✗ old-zhusu-hd.png  字段 12/14，置信度 0.92，耗时 1.9s
+      items: "*住宿服*住宿费等" ≠ "*住宿服务*住宿费" | lines: "2 行" ≠ "1 行"
+  ✗ sdp-geren-screenshot.png  字段 6/13，置信度 0.77，耗时 0.7s
+      buyer: "滴滴出行科技有限公司" ≠ "王磊" | seller: "" ≠ "滴滴出行科技有限公司" | tax: 42.52 ≠ 2.52 | total: 126.5 ≠ 86.5 | rate: null ≠ 3 | items: "*运输服*客运服务费" ≠ "*运输服务*客运服务费" | lines[0].name: "*运输服*客运服务费" ≠ "*运输服务*客运服务费"
+  ✗ sdp-mingxi-screenshot.png  字段 8/13，置信度 0.92，耗时 1.1s
+      items: "*非金属矿物制品红砖等" ≠ "*非金属矿物制品*红砖等" | lines[0].name: "*非金属矿物制品红砖" ≠ "*非金属矿物制品*红砖" | lines[0].unit: "" ≠ "块" | lines[0].qty: null ≠ 83500 | lines[1].unit: "m" ≠ "m³"
+  ✗ sdp-zhuanpiao-photo.jpg  字段 11/13，置信度 0.92，耗时 1.4s
+      items: "*计算机外部设备“显示器等" ≠ "*计算机外部设备*显示器" | lines: "2 行" ≠ "1 行"
+  合计字段准确率：42/66（64%）
+
+[OCR] 模型：4.0.0_best_int（加载 0.3s）
+  ✓ sdp-canyin-screenshot.png  字段 13/13，置信度 0.92，耗时 1.0s
+  ✓ old-zhusu-hd.png  字段 14/14，置信度 0.92，耗时 1.8s
+  ✗ sdp-geren-screenshot.png  字段 11/13，置信度 0.92，耗时 0.8s
+      buyer: "王本" ≠ "王磊" | seller: "滴泣出行科技有限公司" ≠ "滴滴出行科技有限公司"
+  ✗ sdp-mingxi-screenshot.png  字段 9/13，置信度 0.92，耗时 1.2s
+      items: "*非金属矿物制品红砖等" ≠ "*非金属矿物制品*红砖等" | lines[0].name: "*非金属矿物制品红砖" ≠ "*非金属矿物制品*红砖" | lines[0].unit: "。" ≠ "块" | lines[1].unit: "mas" ≠ "m³"
+  ✓ sdp-zhuanpiao-photo.jpg  字段 13/13，置信度 0.92，耗时 1.5s
+  合计字段准确率：60/66（91%）
+
+必须通过的测试全部通过

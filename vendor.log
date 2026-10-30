@@ -1,0 +1,5 @@
+
+> invoice-audit-desk@1.7.3 vendor
+> node scripts/copy-vendor.js
+
+识别组件已就绪：PDF、二维码、文字识别（核心 tesseract-core-lstm.wasm.js、tesseract-core-simd-lstm.wasm.js、tesseract-core-simd.wasm.js、tesseract-core.wasm.js；中文模型 1.6MB，来自 node_modules/@tesseract.js-data/chi_sim/4.0.0_best_int/chi_sim.traineddata.gz）

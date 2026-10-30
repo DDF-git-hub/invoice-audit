@@ -1,0 +1,79 @@
+
+> invoice-audit-desk@1.7.3 test:e2e
+> node test/e2e.js
+
+软件已启动：app://bundle/index.html
+已上传 14 张，等待识别……
+  [页面 warning] Warning: Parameter not found: language_model_ngram_on
+  [页面 warning] Warning: Parameter not found: segsearch_max_char_wh_ratio
+  [页面 warning] Warning: Parameter not found: language_model_ngram_space_delimited_language
+  [页面 warning] Warning: Parameter not found: language_model_use_sigmoidal_certainty
+  [页面 warning] Warning: Parameter not found: language_model_ngram_nonmatch_score
+  [页面 warning] Warning: Parameter not found: classify_integer_matcher_multiplier
+  [页面 warning] Warning: Parameter not found: assume_fixed_pitch_char_segment
+  [页面 warning] Warning: Parameter not found: allow_blob_division
+识别完成，用时 11s
+  ✓ sdp-canyin.pdf                 方式 pdf-text  置信度 0.97  字段 13/13
+  ✓ sdp-zhuanpiao.pdf              方式 pdf-text  置信度 0.97  字段 13/13
+  ✓ sdp-geren.pdf                  方式 pdf-text  置信度 0.97  字段 13/13
+  ✓ old-zhusu.pdf                  方式 pdf-text  置信度 0.97  字段 14/14
+  ✓ sdp-mingxi.pdf                 方式 pdf-text  置信度 0.97  字段 13/13
+  ✓ rail.pdf                       方式 pdf-text  置信度 0.97  字段 12/12  备注：金额和税额按 9% 由票价换算
+  ✓ sdp-canyin-screenshot.png      方式 ocr  置信度 0.92  字段 13/13
+  ✓ old-zhusu-hd.png               方式 ocr  置信度 0.92  字段 14/14
+  △ sdp-geren-screenshot.png       方式 ocr  置信度 0.92  字段 12/13
+      seller: "滴六滴出行科技有限公司" ≠ "滴滴出行科技有限公司"
+  △ sdp-mingxi-screenshot.png      方式 ocr  置信度 0.92  字段 11/13
+      lines[1].unit: "m3" ≠ "m³" | lines[2].unit: "邑" ≠ "吨"
+  ✓ sdp-zhuanpiao-photo.jpg        方式 ocr  置信度 0.92  字段 13/13
+  ✓ old-zhusu-stsong.pdf           方式 pdf-text  置信度 0.97  字段 14/14
+  ✓ sdp-canyin.xml                 方式 xml  置信度 0.99  字段 13/13
+  ✓ sdp-zhuanpiao.ofd              方式 ofd  置信度 0.95  字段 13/13
+全部字段准确率：181/184（98%）
+
+[邮箱收票]
+  ✓ 同一个邮箱不能登记给两个人：zhangsan@test.local 已经登记给「张三」了，一个邮箱只能属于一
+  ✓ 员工列表 2 人
+  ✓ 连接测试邮箱
+  ✓ 检查邮件没有报错
+  ✓ 只列出张三两个邮箱的邮件：7 封（应为 7）
+  ✓ 第二个邮箱发来的邮件也收到了
+  ✓ 发票文件 5 个、默认勾选 5 个（应为 5）
+  ✓ 下载不了的链接单独列出：1 个
+  ✓ 没有收进其他发件人的邮件
+  ✓ 压缩包里的 GBK 中文文件名正确：发票.pdf
+  ✓ 台账里归到张三名下的发票：5 张
+  ✓ 每张都记下了邮件，两个邮箱的都归到张三
+  ✓ 识别出的发票号码：26112000000310087642、26312000000207718804、26319166000003651200、26612000000425517093、38291746
+  ✓ 按报销人筛选后显示 5 行
+  ✓ 再次检查时已导入的发票标为「已导入过」且不勾选（已导入过 6，勾选 0）
+  ✓ 刚发来的邮件马上能查到（发送后 0.8 秒）
+
+[导出 Excel]
+  ✓ 导出全部：发票台账_全部_20261030.xlsx
+  ✓ 两张表：发票汇总、发票明细
+  ✓ 发票汇总 19 行（台账 19 张）
+  ✓ 3 行明细的发票在明细表里有 9 行：*非金属矿物制品*红砖/块/83500/0.6237623762376/52084.16；*非金属矿物制品*沙子/m³/280/193.0693069307/54059.41；*非金属矿物制品*水泥/吨/105/459.4059405941/48237.62
+  ✓ 红砖这一行的单位、数量、单价、金额都对
+  ✓ 发票号码按文字保存，不会变成科学计数法
+  ✓ 按提交人导出：发票台账_张三_20261030.xlsx
+  ✓ 只导出了张三的 5 张发票（含两个邮箱）
+  ✓ 查询张三今天的报销：5 张（张三 5 张，价税合计 ¥160,218.00（通过 0，待处理 5，驳回或退回 0） 导出查询结果）
+  ✓ 换成昨天：0 张
+  ✓ 手动指定给李四的发票能按李四查到：1 张
+  ✓ 导出查询结果：发票台账_张三_2026-10-30至2026-10-30_20261030.xlsx
+  ✓ 查询结果导出 5 张
+
+[凭证 → 用友 U8（演示环境）]
+    借 660104 1860.00 [市场部] | 借 660201 1592.92 [市场部] | 借 22210101 207.08 | 贷 224101 3660.00
+  ✓ 张三两张发票合成一张凭证 4 行：招待费（市场部规则）、办公费、进项税、应付员工
+  ✓ 借贷平衡、辅助核算齐全
+  ✓ 改法存成了规则：销售方「上海小南国餐饮有限公司」→ 660299
+  ✓ 凭证已确认，改动留了记录
+  ✓ U8 测试连接：已连接演示环境（模拟 U8）：账套 001，2026 年度，操作员 demo
+  ✓ 生成凭证，拿回 U8 凭证号：记-0001
+  ✓ 演示 U8 收到 1 张凭证：4 行，借贷各 3,660.00，制单人 demo
+  ✓ 两张发票都标上了凭证号
+  ✓ 李四没有登记部门：提示「需要部门」，不能确认
+
+必须通过的检查全部通过

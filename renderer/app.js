@@ -1029,15 +1029,15 @@ function histResults(){
     if (!cur || cur.day !== day){ cur = {day:day, items:[], sum:0}; groups.push(cur); }
     cur.items.push(i); cur.sum += num(i.f.total) || 0;
   });
-  h += '<div class="tbl-wrap"><table class="tbl" style="min-width:900px"><thead><tr><th>' + (histUi.dateType === 'invoice' ? '开票日期' : '提交时间') + '</th><th>报销人</th><th>发票号码</th><th>销售方</th><th>项目</th><th class="num">价税合计</th><th>状态</th><th>来源</th></tr></thead><tbody>';
+  h += '<div class="tbl-wrap"><table class="tbl" style="min-width:1000px"><thead><tr><th>' + (histUi.dateType === 'invoice' ? '开票日期' : '提交时间') + '</th><th>报销人</th><th>发票号码</th><th>销售方</th><th>项目</th><th class="num">价税合计</th><th>状态</th><th>来源</th><th>导入时间</th></tr></thead><tbody>';
   groups.forEach(function(g){
-    h += '<tr class="dayrow"><td colspan="8"><b class="mono">' + esc(g.day) + '</b> <span class="muted">' + g.items.length + ' 张 · ' + fmt(r2(g.sum)) + '</span></td></tr>';
+    h += '<tr class="dayrow"><td colspan="9"><b class="mono">' + esc(g.day) + '</b> <span class="muted">' + g.items.length + ' 张 · ' + fmt(r2(g.sum)) + '</span></td></tr>';
     g.items.forEach(function(i){
       var d = subDate(i);
       h += '<tr data-open="' + i.id + '" tabindex="0"><td class="mono nowrap" style="font-size:12px">' + (histUi.dateType === 'invoice' ? esc(dayOf(d)) + ' 提交' : ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2)) + '</td>' +
         '<td class="nowrap">' + esc(personLabel(i) || '—') + '</td><td class="mono nowrap" style="font-size:12px">' + esc(i.f.no || '—') + '</td><td>' + esc(i.f.seller || '—') + '</td><td class="muted">' + esc(i.f.items || '') + '</td>' +
         '<td class="num mono">' + fmt(num(i.f.total)) + '</td><td>' + statusChip(i, A) + (i.memo ? '<span class="decision" style="white-space:normal">' + esc(i.memo) + '</span>' : '') + '</td>' +
-        '<td class="muted" style="font-size:12px">' + esc(i.mail && i.mail.subject ? '邮件：' + i.mail.subject : i.file || (i.source === 'manual' ? '手动录入' : '')) + '</td></tr>';
+        '<td class="muted" style="font-size:12px">' + esc(i.mail && i.mail.subject ? '邮件：' + i.mail.subject : i.file || (i.source === 'manual' ? '手动录入' : '')) + '</td><td class="mono nowrap muted" style="font-size:12px">' + esc(fmtImport(i.createdAt)) + '</td></tr>';
     });
   });
   return h + '</tbody></table></div><div class="tbl-foot"><span>点一行查看发票和审核结果</span></div></section>';
@@ -1080,6 +1080,8 @@ function parseSenders(s){
   return out;
 }
 function fmtSize(n){ return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB'; }
+// 导入时间：今天的只显示时分，其他日子显示月-日 时分
+function fmtImport(t){ var d = new Date(t); if (!t || isNaN(d)) return ''; var hm = ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2); return d.toDateString() === new Date().toDateString() ? '今天 ' + hm : ('0'+(d.getMonth()+1)).slice(-2) + '-' + ('0'+d.getDate()).slice(-2) + ' ' + hm; }
 function fmtDateTime(iso){ if (!iso) return ''; var d = new Date(iso); if (isNaN(d)) return ''; return d.getFullYear() + '-' + ('0'+(d.getMonth()+1)).slice(-2) + '-' + ('0'+d.getDate()).slice(-2) + ' ' + ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2); }
 var MAIL_HELP = {
   qq: '<ol><li>在电脑上登录 QQ 邮箱网页版 <a href="https://mail.qq.com" target="_blank" rel="noopener">mail.qq.com</a>，点右上角「设置」→「账号与安全」（旧版是「设置 → 账户」）</li><li>找到「POP3/IMAP/SMTP/Exchange/CardDAV 服务」，开启「IMAP/SMTP 服务」</li><li>按提示用手机发短信验证，页面会显示一串 16 位的「授权码」，复制粘贴到左边</li></ol><p class="note">授权码只显示一次，可以随时重新生成。修改 QQ 密码后，旧的授权码可能失效，需要重新生成。</p>',

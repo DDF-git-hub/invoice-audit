@@ -1,7 +1,7 @@
 {
   "name": "invoice-audit-desk",
   "productName": "发票审核台",
-  "version": "1.6.1",
+  "version": "1.7.0",
   "description": "发票审核台 - 发票自动识别与审核",
   "main": "main.js",
   "author": "财务部",

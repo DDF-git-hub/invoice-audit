@@ -180,6 +180,7 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13px;min-width:880px}
 .ck.warn .ic{background:var(--review-bg);color:var(--review)}
 .ck.fail .ic{background:var(--block-bg);color:var(--block)}
 .ck.skip .ic{background:var(--surface-2);color:var(--muted)}
+.ck.info .ic{background:var(--surface-2);color:var(--ink,#1f2937);font-weight:700;font-style:italic}
 .ck .t{font-weight:500}
 .ck .dd{color:var(--muted);font-size:12px;overflow-wrap:anywhere}
 .ck>div{min-width:0;display:flex;flex-direction:column}

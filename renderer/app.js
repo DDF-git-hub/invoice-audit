@@ -14,6 +14,8 @@ var RULES = [
   {id:'nearDup',   name:'疑似重复',       how:'同一销售方、同一天、同一金额，号码不同', lv:'review'},
   {id:'overLimit', name:'超出报销标准',   how:'按左边各类别的单张上限判断，处理方式在左边设置', lv:null},
   {id:'stale',     name:'超过报销期限',   how:'开票日期距今超过设定天数', lv:'review'},
+  {id:'crossYear', name:'跨年度发票',     how:'上一年开具、今年报销：注意费用所属期间和企业所得税汇算清缴', lv:'review'},
+  {id:'splitNo',   name:'连号拆票',       how:'同一销售方、同一天开具、发票号码连续，可能为避开单张限额拆开开票', lv:'review'},
   {id:'taxRate',   name:'税率或税额异常', how:'税率不在允许范围，或税额与金额×税率对不上', lv:'review'},
   {id:'bigAmt',    name:'大额发票',       how:'单张超过设定金额', lv:'review'},
   {id:'sellerTax', name:'销售方税号格式异常', how:'不是 15、18 或 20 位的有效格式', lv:'review'},
@@ -181,6 +183,18 @@ function audit(inv, all){
     else add('stale', false, '在报销期限内', '开票 ' + ds + ' 天，期限 ' + cfg.days + ' 天');
   }
 
+  // 进项税：专票里的餐饮、娱乐、居民日常服务不得抵扣；旅客运输票据按规定计算抵扣
+  if (/专用/.test(f.type || '') && noDedReason(inv)) checks.push({id:'deduct', k:'info', title:'进项税不得抵扣', detail: noDedReason(inv) + '的进项税额不得抵扣（财税〔2016〕36 号），生成凭证时全额计入费用', fields:[]});
+  else if (isTravel(inv) && acct().dedTravel && T != null){ var tx = dedTax(inv); if (tx > 0) checks.push({id:'deduct', k:'info', title:'旅客运输可抵扣进项', detail: (num(f.tax) > 0 ? '按票面税额 ' + fmtN(tx) : '票面未列税额，按 价税合计 ÷ (1+9%) × 9% 计算 ' + fmtN(tx)) + '；须为本单位员工本人乘坐', fields:[]}); }
+
+  if (f.date && inv.createdAt){
+    var fy = Number(String(f.date).slice(0, 4)), sy = new Date(inv.createdAt).getFullYear();
+    if (fy && fy < sy){
+      var dl = (fy + 1) + '-05-31', sub = new Date(inv.createdAt), subIso = sub.getFullYear() + '-' + ('0' + (sub.getMonth() + 1)).slice(-2) + '-' + ('0' + sub.getDate()).slice(-2);
+      add('crossYear', true, '跨年度发票', fy + ' 年开具、' + sy + ' 年报销：费用属于 ' + fy + ' 年，注意入账期间；' + (subIso <= dl ? '在 ' + fy + ' 年度企业所得税汇算清缴结束（' + (fy + 1) + ' 年 5 月 31 日）前取得，可在 ' + fy + ' 年税前扣除' : '已过 ' + fy + ' 年度企业所得税汇算清缴期（' + (fy + 1) + ' 年 5 月 31 日），能否在 ' + fy + ' 年税前扣除请与税务会计确认'), ['date']);
+    }
+  }
+
   var no = normNo(f.no);
   if (no){
     var prev = all.filter(function(o){ return o.id !== inv.id && o.status === 'ready' && normNo(o.f.no) === no && o.createdAt < inv.createdAt; })[0];
@@ -191,6 +205,15 @@ function audit(inv, all){
   if (f.seller && f.date && T != null){
     var near = all.filter(function(o){ return o.id !== inv.id && o.status === 'ready' && normName(o.f.seller) === normName(f.seller) && o.f.date === f.date && num(o.f.total) === T && normNo(o.f.no) !== no; })[0];
     if (near) add('nearDup', true, '疑似重复', '与 ' + (near.f.no || '另一张发票') + ' 同销售方、同日、同金额，可能一笔消费开了两张', ['seller','date','total']);
+  }
+
+  // 连号拆票：同一销售方、同一天、号码相差不超过 3
+  if (no && f.seller && f.date){
+    var sibs = all.filter(function(o){ var n = normNo(o.f.no); return o.id !== inv.id && o.status === 'ready' && n && n !== no && n.length === no.length && normName(o.f.seller) === normName(f.seller) && o.f.date === f.date && consecutive(n, no); });
+    if (sibs.length){
+      var sum = r2(sibs.reduce(function(x, o){ return x + (num(o.f.total) || 0); }, T || 0)), lim0 = cfg.limits[f.cat];
+      add('splitNo', true, '连号拆票', '与 ' + sibs.map(function(o){ return o.f.no; }).join('、') + ' 号码连续，同一销售方同一天开具，合计 ' + fmt(sum) + (lim0 && lim0.v != null && sum > lim0.v && (T || 0) <= lim0.v ? '，合计超过' + f.cat + '单张上限 ' + fmt(lim0.v) + '，可能为避开限额拆开开票' : ''), ['no']);
+    }
   }
 
   var lim = cfg.limits[f.cat];
@@ -204,7 +227,7 @@ function audit(inv, all){
 
   if (inv.qr && inv.qr.mismatch && inv.qr.mismatch.length) add('unclear', true, '与二维码不一致', inv.qr.mismatch.join('、') + '的识别结果和发票二维码不同，已按二维码修正，请核对', []);
   checks.push({id:'verify', k:'skip', title:'真伪查验', detail:'演示版未接入查验接口', fields:[]});
-  var order = {fail:0, warn:1, ok:2, skip:3};
+  var order = {fail:0, warn:1, info:2, ok:3, skip:4};
   checks.sort(function(x,y){ return order[x.k] - order[y.k]; });
   var level = checks.some(function(c){ return c.k === 'fail'; }) ? 'block' : checks.some(function(c){ return c.k === 'warn'; }) ? 'review' : 'pass';
   return {level:level, checks:checks};
@@ -245,11 +268,15 @@ function makeSamples(){
     ['增值税电子普通发票','住宿','',-150,buyer,bt,'杭州西湖国宾馆','91330100143059876R',528.30,31.70,560.00,6,'*住宿服务*住宿费',0.62,'IMG_3302.jpg'],
     ['数电票（普通发票）','交通','26312000000198854026',-9,buyer,bt,'上海强生出租汽车有限公司','91310000132211459W',83.98,2.52,86.50,3,'*运输服务*客运服务费',0.98,'出租车_1018.jpg'],
     ['电子发票（铁路电子客票）','交通','26312000000199120375',-8,buyer,bt,'中国铁路上海局集团有限公司','91310000MA1FL8RT2N',260.55,23.45,284.00,9,'*运输服务*铁路旅客运输',0.97,'火车票_上海杭州.pdf'],
-    ['数电票（普通发票）','办公用品','26312000000201436688',-3,buyer,bt,'上海晨光文具股份有限公司','91310000759312468J',341.59,44.41,386.00,13,'*文具*签字笔、笔记本',0.98,'晨光_1024.pdf']
+    ['数电票（普通发票）','办公用品','26312000000201436688',-3,buyer,bt,'上海晨光文具股份有限公司','91310000759312468J',341.59,44.41,386.00,13,'*文具*签字笔、笔记本',0.98,'晨光_1024.pdf'],
+    ['数电票（专用发票）','餐饮','26312000000207719120',-4,buyer,bt,'上海老正兴菜馆有限公司','91310101132251234X',943.40,56.60,1000.00,6,'*餐饮服务*餐费',0.97,'老正兴_专票.pdf'],
+    ['数电票（普通发票）','餐饮','26312000000215530417',-2,buyer,bt,'上海鼎泰丰餐饮有限公司','91310104MA1FR2K91E',452.83,27.17,480.00,6,'*餐饮服务*餐费',0.96,'鼎泰丰_1.pdf'],
+    ['数电票（普通发票）','餐饮','26312000000215530418',-2,buyer,bt,'上海鼎泰丰餐饮有限公司','91310104MA1FR2K91E',471.70,28.30,500.00,6,'*餐饮服务*餐费',0.96,'鼎泰丰_2.pdf'],
+    ['数电票（普通发票）','住宿','25312000000198812046',(new Date().getFullYear() - 1) + '-12-26',buyer,bt,'上海和平饭店有限公司','91310000132203456N',528.30,31.70,560.00,6,'*住宿服务*住宿费',0.97,'和平饭店_去年.pdf']
   ];
   return S.map(function(s, i){
     return {id:uid() + i, createdAt: base + i*1000, source:'sample', file:s[14], status:'ready', conf:s[13], aiNotes: s[13] < 0.8 ? '发票号码区域被折痕遮挡' : '', decision:null, memo:'',
-      f:{type:s[0], cat:s[1], no:s[2], code:'', date:isoOffset(s[3]), buyer:s[4], buyerTax:s[5], seller:s[6], sellerTax:s[7], amount:s[8], tax:s[9], total:s[10], rate:s[11], items:s[12]}};
+      f:{type:s[0], cat:s[1], no:s[2], code:'', date: typeof s[3] === 'string' ? s[3] : isoOffset(s[3]), buyer:s[4], buyerTax:s[5], seller:s[6], sellerTax:s[7], amount:s[8], tax:s[9], total:s[10], rate:s[11], items:s[12]}};
   });
 }
 function emptyFields(){ return {type:'', cat:'其他', no:'', code:'', date:'', buyer:'', buyerTax:'', seller:'', sellerTax:'', amount:null, tax:null, total:null, rate:null, items:'', lines:[]}; }
@@ -720,7 +747,7 @@ function viewReview(id){
 function checksHtml(inv, au){
   if (!au) return '<h2 class="h">审核结果</h2><span class="sub">识别完成后自动审核</span>';
   var bad = au.checks.filter(function(c){ return c.k === 'fail' || c.k === 'warn'; }).length;
-  var I = {ok:'✓', warn:'▲', fail:'✕', skip:'–'};
+  var I = {ok:'✓', warn:'▲', fail:'✕', skip:'–', info:'i'};
   return '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><h2 class="h">审核结果</h2><span class="sub">' + au.checks.length + ' 项检查' + (bad ? ' · ' + bad + ' 项有问题' : ' · 全部通过') + '</span></div>' +
     au.checks.map(function(c){ return '<div class="ck ' + c.k + '"><span class="ic" aria-hidden="true">' + I[c.k] + '</span><div><span class="t">' + esc(c.title) + '</span><span class="dd">' + esc(c.detail) + '</span></div></div>'; }).join('');
 }
@@ -1236,16 +1263,23 @@ function matchRule(inv){
   return best;
 }
 function ruleText(r){ return r ? [r.seller ? '销售方「' + r.seller + '」' : '', r.dept ? '部门「' + r.dept + '」' : '', r.cat ? '类别「' + r.cat + '」' : ''].filter(Boolean).join(' + ') : '没有匹配的规则'; }
-function isDeductible(inv){ var t = inv.f.type || '', A = acct(); return !!((A.dedSpecial && /专用/.test(t)) || (A.dedTravel && /铁路|航空|客票|行程单/.test(t))); }
+var NO_DED_RE = /餐饮服务|娱乐服务|居民日常服务/;
+// 专票里不得抵扣的项目（财税〔2016〕36 号：餐饮、娱乐、居民日常服务）
+function noDedReason(inv){ var f = inv.f, s = (f.items || '') + ' ' + (f.lines || []).map(function(l){ return (l && l.name) || ''; }).join(' '), m = s.match(NO_DED_RE); return m ? m[0] : f.cat === '餐饮' ? '餐饮服务' : ''; }
+function isTravel(inv){ return /铁路|航空|客票|行程单/.test(inv.f.type || ''); }
+function isDeductible(inv){ var t = inv.f.type || '', A = acct(); if (A.dedSpecial && /专用/.test(t)) return !noDedReason(inv); return !!(A.dedTravel && isTravel(inv)); }
+// 可抵扣税额：票面有税额用票面；旅客运输票据没列税额的按 价税合计 ÷ (1+9%) × 9% 计算
+function dedTax(inv){ var f = inv.f, t = num(f.tax), T = num(f.total); if (t > 0) return r2(t); if (isTravel(inv) && T > 0) return r2(T / 1.09 * 0.09); return 0; }
+function consecutive(a, b){ try { var d = BigInt(a) - BigInt(b); return d !== 0n && d <= 3n && d >= -3n; } catch (e) { return false; } }
 function eligibleFor(inv, A){ return inv.status === 'ready' && ((A[inv.id] && A[inv.id].level === 'pass' && !inv.decision) || inv.decision === 'approved'); }
 function genLines(invs){
   var lines = [], total = 0, e0 = employeeOf(invs[0]);
   invs.forEach(function(inv){
     var f = inv.f, T = num(f.total) || 0, A = num(f.amount), t = num(f.tax) || 0, e = employeeOf(inv), r = matchRule(inv);
-    var ded = isDeductible(inv) && t > 0 && A != null;
+    var tx = isDeductible(inv) ? dedTax(inv) : 0, ded = tx > 0, nd = /专用/.test(f.type || '') && noDedReason(inv);
     var tail = f.no ? ' 发票' + String(f.no).slice(-8) : '';
-    lines.push({dc:'D', code: r ? r.code : '', summary: (personLabel(inv) || '') + '报销' + (f.cat === '其他' ? '' : f.cat) + '费 ' + (f.seller || '') + tail, amount: r2(ded ? A : T), dept: e && e.dept || '', person: '', invId: inv.id, kind: 'exp', rule: r ? '规则：' + ruleText(r) : '没有匹配的规则'});
-    if (ded) lines.push({dc:'D', code: acct().taxCode, summary: '进项税额' + tail, amount: r2(t), dept: '', person: '', invId: inv.id, kind: 'tax', rule: '可抵扣：' + (/专用/.test(f.type) ? '专用发票' : '旅客运输票据')});
+    lines.push({dc:'D', code: r ? r.code : '', summary: (personLabel(inv) || '') + '报销' + (f.cat === '其他' ? '' : f.cat) + '费 ' + (f.seller || '') + tail, amount: r2(ded ? T - tx : T), dept: e && e.dept || '', person: '', invId: inv.id, kind: 'exp', rule: (r ? '规则：' + ruleText(r) : '没有匹配的规则') + (nd ? '；' + nd + '专票进项不得抵扣，全额计入费用' : '')});
+    if (ded) lines.push({dc:'D', code: acct().taxCode, summary: '进项税额' + tail, amount: tx, dept: '', person: '', invId: inv.id, kind: 'tax', rule: '可抵扣：' + (/专用/.test(f.type) ? '专用发票' : '旅客运输票据' + (num(f.tax) > 0 ? '' : '，按 9% 计算'))});
     total += T;
   });
   var name = personLabel(invs[0]) || '未指定报销人';

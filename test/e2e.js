@@ -420,6 +420,9 @@ fs.mkdirSync(out, { recursive: true });
     await page.waitForSelector('[data-act="samples"]');
     await page.click('[data-act="samples"]');
     await page.waitForTimeout(800);
+    if (await page.$('#person-filter')) { await page.selectOption('#person-filter', ''); await page.waitForTimeout(300); }
+    await page.click('[data-filter="all"]');
+    await page.waitForTimeout(300);
     const sid = await page.evaluate(() => { const r = Array.from(document.querySelectorAll('tr[data-open]')).find((x) => /香格里拉/.test(x.innerText)); return r && r.getAttribute('data-open'); });
     chk(!!sid, '示例里有职级标准的发票');
     if (sid) {

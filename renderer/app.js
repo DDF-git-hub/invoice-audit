@@ -316,7 +316,7 @@ function makeSamples(){
   // 职级标准示例：经理在上海住 2 晚，标准 700 元/晚，发票 1,580 元
   S.push(['数电票（普通发票）','住宿','26312000000221904518',-3,buyer,bt,'上海静安香格里拉大酒店有限公司','91310000607281234C',1490.57,89.43,1580.00,6,'*住宿服务*住宿费',0.97,'香格里拉_2晚.pdf']);
   var demoEmp = emps().filter(function(e){ return e.name === '王芳（示例）'; })[0];
-  if (!demoEmp){ demoEmp = {id:'e' + uid(), name:'王芳（示例）', dept:'市场部', grade: std().grades[1] || std().grades[0] || '', emails:[], createdAt:Date.now()}; emps().push(demoEmp); }
+  if (!demoEmp){ demoEmp = {id:'e' + uid(), sample:true, name:'王芳（示例）', dept:'市场部', grade: std().grades[1] || std().grades[0] || '', emails:[], createdAt:Date.now()}; emps().push(demoEmp); }
   return S.map(function(s, i){
     var last = i === S.length - 1;
     return {id:uid() + i, createdAt: base + i*1000, source:'sample', employeeId: last ? demoEmp.id : null, file:s[14], status:'ready', conf:s[13], aiNotes: s[13] < 0.8 ? '发票号码区域被折痕遮挡' : '', decision:null, memo:'',
@@ -1909,6 +1909,8 @@ function voucherChange(t){
 }
 
 /* ---------- 事件 ---------- */
+// 示例员工只跟示例发票一起存在：没有发票用到时删掉
+function dropSampleEmps(){ cfg.employees = emps().filter(function(e){ return !e.sample || invoices.some(function(i){ return i.employeeId === e.id; }); }); }
 function ruleName(id){ return (RULES.filter(function(r){ return r.id === id; })[0] || {}).name || id; }
 function findInv(id){ return invoices.filter(function(i){ return i.id === id; })[0]; }
 document.addEventListener('click', function(e){
@@ -1987,10 +1989,10 @@ document.addEventListener('click', function(e){
   else if (act === 'samples'){ var smp = makeSamples(); invoices = smp.concat(invoices.filter(function(i){ return i.source !== 'sample'; })); audLog('加载示例发票', {type:'ledger', id:'ledger', label:'发票台账'}, smp.length + ' 张'); save(); render(); toast('已加载 ' + smp.length + ' 张示例发票'); }
   else if (act === 'clear'){ ui.confirmClear = true; render(); }
   else if (act === 'clear-no'){ ui.confirmClear = false; render(); }
-  else if (act === 'clear-yes'){ audLog('清空台账', {type:'ledger', id:'ledger', label:'发票台账'}, '清空 ' + invoices.filter(function(i){ return i.status !== 'recognizing'; }).length + ' 张发票；原件存档保留'); invoices = invoices.filter(function(i){ return i.status === 'recognizing'; }); ui.confirmClear = false; save(); render(); toast('台账已清空'); }
+  else if (act === 'clear-yes'){ audLog('清空台账', {type:'ledger', id:'ledger', label:'发票台账'}, '清空 ' + invoices.filter(function(i){ return i.status !== 'recognizing'; }).length + ' 张发票；原件存档保留'); invoices = invoices.filter(function(i){ return i.status === 'recognizing'; }); ui.confirmClear = false; dropSampleEmps(); save(); render(); toast('台账已清空'); }
   else if (act === 'del'){ ui.confirmDel = true; render(); }
   else if (act === 'del-no'){ ui.confirmDel = false; render(); }
-  else if (act === 'del-yes'){ var id = t.getAttribute('data-id'), dv = findInv(id); if (dv) audLog('删除发票', invT(dv), '价税合计 ' + fmt(num(dv.f.total)) + (dv.archive ? '；原件存档保留：' + dv.archive.path : '')); invoices = invoices.filter(function(i){ return i.id !== id; }); queue = queue.filter(function(i){ return i.id !== id; }); ui.confirmDel = false; save(); location.hash = 'ledger'; toast('已删除'); }
+  else if (act === 'del-yes'){ var id = t.getAttribute('data-id'), dv = findInv(id); if (dv) audLog('删除发票', invT(dv), '价税合计 ' + fmt(num(dv.f.total)) + (dv.archive ? '；原件存档保留：' + dv.archive.path : '')); invoices = invoices.filter(function(i){ return i.id !== id; }); queue = queue.filter(function(i){ return i.id !== id; }); ui.confirmDel = false; dropSampleEmps(); save(); location.hash = 'ledger'; toast('已删除'); }
   else if (act === 'retry' || act === 'retry-ai'){
     var iv = findInv(t.getAttribute('data-id'));
     if (iv) getFile(iv).then(function(fl){

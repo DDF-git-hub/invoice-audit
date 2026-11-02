@@ -318,6 +318,15 @@ ipcMain.handle('mail:import', wrap(async ({ scanId, ids }) => {
   writeJsonAtomic(MAIL_SEEN(), Array.from(seen).slice(-20000));
   return out;
 }));
+// 清空台账时一起清掉：邮件「已导入过」标记、演示 U8 里的凭证（凭证号从 0001 重新开始）。
+// 原件存档和操作记录不清：存档按文件指纹去重，操作记录只追加。
+ipcMain.handle('ledger:reset', wrap(async () => {
+  const out = { mailSeen: 0, u8Demo: 0 };
+  try { out.mailSeen = readJson(MAIL_SEEN(), []).length; fs.unlinkSync(MAIL_SEEN()); } catch (e) { /* 没有就算了 */ }
+  const demo = path.join(dataDir(), 'u8-demo.json');
+  try { out.u8Demo = (readJson(demo, { vouchers: [] }).vouchers || []).length; fs.unlinkSync(demo); } catch (e) { /* 没有就算了 */ }
+  return out;
+}));
 ipcMain.handle('mail:openLink', wrap(async (url) => { if (/^https?:\/\//i.test(String(url))) await shell.openExternal(String(url)); return true; }));
 
 /* ---------------- 用友 U8 ---------------- */

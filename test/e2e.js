@@ -461,6 +461,29 @@ fs.mkdirSync(out, { recursive: true });
     await page.screenshot({ path: path.join(out, '20-规则设置.png'), fullPage: true });
   }
 
+  // ---------- 清空台账后可以重新演示 ----------
+  if (process.env.MAIL_TEST) {
+    console.log('\n[清空台账后重新演示]');
+    const chk = (ok, msg) => { console.log((ok ? '  ✓ ' : '  ✗ ') + msg); if (!ok) mustFail++; };
+    await page.evaluate(() => { location.hash = 'ledger'; });
+    await page.waitForSelector('[data-act="clear"]');
+    await page.click('[data-act="clear"]');
+    await page.click('[data-act="clear-yes"]');
+    await page.waitForTimeout(1500);
+    const led = JSON.parse(fs.readFileSync(path.join(ud, 'ledger.json'), 'utf8'));
+    chk(led.invoices.length === 0 && led.vouchers.length === 0, '发票和凭证都清空了');
+    chk(!fs.existsSync(path.join(ud, 'mail-seen.json')) && !fs.existsSync(path.join(ud, 'u8-demo.json')), '邮件已导入标记、演示 U8 凭证都清掉了');
+    chk(led.cfg.employees.some((e) => e.name === '张三') && fs.existsSync(path.join(ud, 'audit-log.jsonl')), '员工和操作记录保留');
+    await page.evaluate(() => { location.hash = 'mail'; });
+    await page.waitForSelector('[data-act="mail-scan"]');
+    await page.click('[data-act="mail-scan"]');
+    await page.waitForTimeout(500);
+    for (let k = 0; k < 240; k++) { if (await page.evaluate(() => !!document.querySelector('[data-act="mail-scan"]:not([disabled])'))) break; await page.waitForTimeout(500); }
+    const r = await page.evaluate(() => ({ files: document.querySelectorAll('.mail-file').length, checked: document.querySelectorAll('.mail-file:checked').length, seen: (document.querySelector('#view').innerText.match(/已导入过/g) || []).length }));
+    chk(r.files > 0 && r.checked === r.files && r.seen === 0, '再检查邮件：' + r.files + ' 个文件都能重新导入（勾选 ' + r.checked + '，已导入过 ' + r.seen + '）');
+    await page.screenshot({ path: path.join(out, '21-清空后重新收票.png'), fullPage: true });
+  }
+
   fs.writeFileSync(path.join(out, 'e2e-report.json'), JSON.stringify(report, null, 2));
   await app.close();
   if (errors.length) { console.log('页面有 ' + errors.length + ' 个脚本错误'); mustFail++; }

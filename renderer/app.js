@@ -768,7 +768,7 @@ function viewLedger(){
     '<a href="#rules" style="font-size:13px;text-decoration:none;font-weight:500">修改规则 →</a></section>';
   h += '<section class="card pad stack"><h2 class="h">台账数据</h2><div class="actions">' +
     '<button class="btn sm" type="button" data-act="samples">加载示例发票</button>' +
-    (invoices.length ? (ui.confirmClear ? '<button class="btn sm danger" type="button" data-act="clear-yes">确认清空 ' + invoices.length + ' 张</button><button class="linkbtn muted" type="button" data-act="clear-no">取消</button>' : '<button class="btn sm" type="button" data-act="clear">清空台账</button>') : '') +
+    (invoices.length ? (ui.confirmClear ? '<button class="btn sm danger" type="button" data-act="clear-yes">确认清空 ' + invoices.length + ' 张</button><button class="linkbtn muted" type="button" data-act="clear-no">取消</button><span class="sub" style="flex-basis:100%">会一起清掉：凭证、邮件的「已导入过」标记、演示 U8 里的凭证。员工、规则、邮箱设置不变；原件存档和操作记录保留。</span>' : '<button class="btn sm" type="button" data-act="clear">清空台账</button>') : '') +
     '<button class="btn sm" type="button" data-act="arch-dir">打开原件存档</button><button class="btn sm" type="button" data-act="open-dir">打开数据文件夹</button><button class="btn sm" type="button" data-act="upd-check">检查更新</button></div>' + (appVer ? '<p class="note">当前版本 v' + esc(appVer) + (isPortable ? '（免安装版）' : '') + '</p>' : '') + '<p class="note">台账只保存在这台电脑：' + esc(dataDir) + '。原始发票文件存在 archive 文件夹（按年月），操作记录在 audit-log.jsonl。换电脑或备份时，复制整个文件夹。</p></section>';
   h += '<p class="note">真伪查验需要接入税务数字账户或有资质的第三方查验接口，演示版暂未接入，标为「未接入」。</p></aside></div>';
   return h;
@@ -2012,7 +2012,16 @@ document.addEventListener('click', function(e){
   else if (act === 'samples'){ var smp = makeSamples(); invoices = smp.concat(invoices.filter(function(i){ return i.source !== 'sample'; })); audLog('加载示例发票', {type:'ledger', id:'ledger', label:'发票台账'}, smp.length + ' 张'); save(); render(); toast('已加载 ' + smp.length + ' 张示例发票'); }
   else if (act === 'clear'){ ui.confirmClear = true; render(); }
   else if (act === 'clear-no'){ ui.confirmClear = false; render(); }
-  else if (act === 'clear-yes'){ audLog('清空台账', {type:'ledger', id:'ledger', label:'发票台账'}, '清空 ' + invoices.filter(function(i){ return i.status !== 'recognizing'; }).length + ' 张发票；原件存档保留'); invoices = invoices.filter(function(i){ return i.status === 'recognizing'; }); ui.confirmClear = false; dropSampleEmps(); save(); render(); toast('台账已清空'); }
+  else if (act === 'clear-yes'){
+    var nClr = invoices.filter(function(i){ return i.status !== 'recognizing'; }).length, nV = vouchers.length;
+    invoices = invoices.filter(function(i){ return i.status === 'recognizing'; }); vouchers = [];
+    ui.confirmClear = false; ui.person = ''; mailUi.result = null; mailUi.sel = {}; dropSampleEmps(); save(); render();
+    window.api.resetLedger().then(function(r){
+      var d = r && r.ok ? r.data : {mailSeen:0, u8Demo:0};
+      audLog('清空台账', {type:'ledger', id:'ledger', label:'发票台账'}, '清空 ' + nClr + ' 张发票、' + nV + ' 张凭证；邮件「已导入过」标记 ' + d.mailSeen + ' 个、演示 U8 凭证 ' + d.u8Demo + ' 张一并清除；原件存档和操作记录保留');
+      toast('台账已清空，邮件可以重新导入，演示 U8 凭证号从 0001 开始');
+    });
+  }
   else if (act === 'del'){ ui.confirmDel = true; render(); }
   else if (act === 'del-no'){ ui.confirmDel = false; render(); }
   else if (act === 'del-yes'){ var id = t.getAttribute('data-id'), dv = findInv(id); if (dv) audLog('删除发票', invT(dv), '价税合计 ' + fmt(num(dv.f.total)) + (dv.archive ? '；原件存档保留：' + dv.archive.path : '')); invoices = invoices.filter(function(i){ return i.id !== id; }); queue = queue.filter(function(i){ return i.id !== id; }); ui.confirmDel = false; dropSampleEmps(); save(); location.hash = 'ledger'; toast('已删除'); }

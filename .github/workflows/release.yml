@@ -57,6 +57,14 @@ jobs:
           MAIL_IMAP_PORT: '3143'
         run: xvfb-run -a --server-args="-screen 0 1600x1000x24" npm run test:e2e 2>&1 | tee test-output/e2e.log
 
+      - name: 演示截图（按演示讲稿逐步截图）
+        continue-on-error: true
+        shell: bash
+        env:
+          MAIL_SMTP_PORT: '3025'
+          MAIL_IMAP_PORT: '3143'
+        run: xvfb-run -a --server-args="-screen 0 1600x1000x24" node test/demo-shots.js 2>&1 | tee test-output/demo-shots.log
+
       - name: 保存测试截图和报告
         if: always()
         uses: actions/upload-artifact@v4

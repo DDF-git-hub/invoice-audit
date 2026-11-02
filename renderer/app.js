@@ -1892,6 +1892,7 @@ function voucherChange(t){
     var old = v.lines[i][f], val = t.value;
     if (f === 'amount') val = num(val);
     if (f === 'code') val = val.trim().split(/\s/)[0];
+    if (String(old == null ? '' : old) === String(val == null ? '' : val)) return true;
     v.lines[i][f] = val;
     vlog(v, '第 ' + (i + 1) + ' 行 ' + ({dc:'借贷', code:'科目', summary:'摘要', dept:'部门', person:'个人', amount:'金额'}[f]) + '：' + (old == null ? '' : old) + ' → ' + (val == null ? '' : val));
     save(); render(); return true;

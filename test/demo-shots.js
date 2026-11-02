@@ -64,8 +64,10 @@ const shots = [];
           const n = document.createElement('div');
           n.className = '__mark';
           n.textContent = b.label;
+          // 标号放在框的左外侧，不挡住字段名
+          const outside = b.x > 46;
           n.style.cssText = 'position:fixed;z-index:99999;pointer-events:none;background:#E5262A;color:#fff;font:700 15px/28px sans-serif;min-width:28px;height:28px;padding:0 6px;border-radius:14px;text-align:center;box-shadow:0 2px 6px rgba(0,0,0,.3);' +
-            'left:' + Math.max(2, b.x - 18) + 'px;top:' + Math.max(2, b.y - 18) + 'px';
+            (outside ? 'left:' + (b.x - 42) + 'px;top:' + (b.y + Math.min(b.h / 2, 22) - 14) + 'px' : 'left:' + Math.max(2, b.x - 18) + 'px;top:' + Math.max(2, b.y - 18) + 'px');
           document.body.appendChild(n);
         }
       });
@@ -134,7 +136,9 @@ const shots = [];
   await page.click('[data-act="mail-scan"]');
   await wait(500);
   for (let k = 0; k < 120; k++) { if (await page.evaluate(() => !!document.querySelector('[data-act="mail-scan"]:not([disabled])'))) break; await wait(500); }
-  await shot('08-邮件清单', [['section[aria-label="邮件清单"] .filters', 1], ['[data-act="mail-import"]', 2]], { noScroll: false });
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await wait(200);
+  await shot('08-邮件清单', [['section[aria-label="邮件清单"] .mailmsg', 1], ['[data-act="mail-import"]', 2]], { noScroll: true });
   await page.click('[data-act="mail-import"]');
   await wait(600);
   if (await page.$('.progress')) await shot('09-正在识别', [['.progress', null]]);
@@ -157,7 +161,8 @@ const shots = [];
 
   // ---------- 4. 职级与城市标准 ----------
   await openRow(/香格里拉/);
-  await shot('14-超出住宿标准', [['#rv-checks .ck:has-text("住宿标准")', 1], ['#rv-std', 2]]);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await shot('14-超出住宿标准', [['#rv-checks .ck:has-text("住宿标准")', 1]], { noScroll: true });
   await page.fill('#tr-nights', '3');
   await page.dispatchEvent('#tr-nights', 'change');
   await wait(500);
@@ -175,7 +180,7 @@ const shots = [];
     if (z.pass) continue;
     await go('review-' + z.id);
     await page.waitForSelector('[data-dec="approved"]');
-    if (z.meal) { await page.fill('#memo', '客户招待 4 人，人均未超标，已核实，同意报销'); await shot('17-人工通过', [['#rv-checks', 1], ['#memo', 2], ['[data-dec="approved"]', 3]], { center: true }); }
+    if (z.meal) { await page.fill('#memo', '客户招待 4 人，人均未超标，已核实，同意报销'); await shot('17-人工通过', [['#memo', 1], ['[data-dec="approved"]', 2]], { center: true }); }
     await page.click('[data-dec="approved"]');
     await wait(600);
   }
@@ -183,14 +188,15 @@ const shots = [];
   const card = 'section[aria-label="凭证 张三"]';
   await page.waitForSelector(card, { timeout: 10000 }).catch(() => {});
   await shot('18-凭证待确认分录', [[card + ' .vtbl', 1], [card + ' .status-ok', 2], [card + ' [data-act="v-confirm"]', 3]]);
-  const zi = await page.evaluate((c) => Array.from(document.querySelectorAll(c + ' tr.vline [data-vf="code"]')).findIndex((x) => x.value === '660104'), card);
+  // 市场部是销售部门：办公费改记「销售费用-办公费」，并存成「市场部 + 办公用品」规则
+  const zi = await page.evaluate((c) => Array.from(document.querySelectorAll(c + ' tr.vline [data-vf="code"]')).findIndex((x) => x.value === '660201'), card);
   const ci = page.locator(card + ' tr.vline [data-vf="code"]').nth(Math.max(zi, 0));
-  await ci.fill('660299');
-  await ci.dispatchEvent('change');
+  await ci.fill('660101');
+  await ci.press('Tab');
   await wait(400);
   await page.click(card + ' [data-act="v-confirm"]');
   await page.waitForSelector('#lm-0');
-  await page.selectOption('#lm-0', 'seller');
+  await page.selectOption('#lm-0', 'dept');
   await shot('19-改科目存成规则', [['#lm-0', 1], ['[data-act="lm-ok"]', 2]], { noScroll: true });
   await page.click('[data-act="lm-ok"]');
   await wait(600);

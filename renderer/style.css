@@ -249,3 +249,16 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13px;min-width:880px}
   .top-right{margin-left:0}
 }
 @media (prefers-reduced-motion:reduce){.spin{animation-duration:2.4s}*{transition:none!important}}
+
+/* 操作人、原件存档、处理记录 */
+.opbtn{border:1px solid var(--line);background:transparent;color:inherit;font:inherit;font-size:13px;border-radius:16px;padding:4px 12px;cursor:pointer}
+.opbtn:hover{border-color:var(--accent)}
+.opbtn b{color:var(--ink);font-weight:600}
+.arch{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.arch .actions{margin-left:auto}
+.loglist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;font-size:13px}
+.loglist li{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:baseline;padding-bottom:6px;border-bottom:1px dashed var(--line)}
+.loglist li:last-child{border-bottom:0}
+.loglist .sub{flex-basis:100%;overflow-wrap:anywhere}
+.vlog summary{cursor:pointer;padding:2px 0}
+.vlog .loglist{margin-top:6px}

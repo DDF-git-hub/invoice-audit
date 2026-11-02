@@ -356,6 +356,94 @@ fs.mkdirSync(out, { recursive: true });
     }
   }
 
+  // ---------- 原件存档、操作记录、职级城市标准（v1.8.0） ----------
+  {
+    console.log('\n[原件存档 / 操作记录 / 职级标准]');
+    const crypto = require('crypto');
+    const chk = (ok, msg) => { console.log((ok ? '  ✓ ' : '  ✗ ') + msg); if (!ok) mustFail++; };
+    const led = JSON.parse(fs.readFileSync(path.join(ud, 'ledger.json'), 'utf8'));
+    const files = led.invoices.filter((i) => i.source === 'file' || i.source === 'mail');
+    const archived = files.filter((i) => i.archive && i.archive.sha256);
+    chk(files.length > 0 && archived.length === files.length, '上传和邮件导入的发票都存了原件：' + archived.length + '/' + files.length);
+    const one = led.invoices.find((i) => i.file === 'sdp-canyin.pdf');
+    if (one && one.archive) {
+      const p = path.join(ud, one.archive.path);
+      const same = fs.existsSync(p) && crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex') === one.archive.sha256;
+      const orig = crypto.createHash('sha256').update(fs.readFileSync(path.join(dir, 'sdp-canyin.pdf'))).digest('hex');
+      chk(same && orig === one.archive.sha256, '存档文件和上传的原件逐字节一致（SHA-256 ' + one.archive.sha256.slice(0, 12) + '…）');
+      // 操作人 + 校验 + 处理记录
+      await page.click('#opBtn');
+      await page.fill('#op-name', '测试会计');
+      await page.click('[data-act="op-ok"]');
+      await page.evaluate((id) => { location.hash = 'review-' + id; }, one.id);
+      await page.waitForSelector('[data-act="arch-verify"]');
+      await page.click('[data-act="arch-verify"]');
+      await page.waitForTimeout(500);
+      const toast = await page.evaluate(() => document.querySelector('#toast').textContent);
+      chk(/原件完好/.test(toast), '复核页校验原件：' + toast);
+      await page.fill('#memo', 'e2e 测试驳回');
+      await page.click('[data-dec="rejected"]');
+      await page.waitForTimeout(800);
+      const after = JSON.parse(fs.readFileSync(path.join(ud, 'ledger.json'), 'utf8')).invoices.find((i) => i.id === one.id);
+      chk(after.decision === 'rejected' && after.decidedBy === '测试会计' && !!after.decidedAt, '驳回记下了处理人和时间：' + after.decidedBy + ' ' + after.decidedAt);
+      // 改一个字段
+      await page.evaluate((id) => { location.hash = 'review-' + id; }, one.id);
+      await page.waitForSelector('#f-items');
+      await page.fill('#f-items', '*餐饮服务*餐费（e2e 修改）');
+      await page.dispatchEvent('#f-items', 'change');
+      await page.waitForTimeout(800);
+      await page.screenshot({ path: path.join(out, '17-原件与处理记录.png'), fullPage: true });
+    }
+    const logFile = path.join(ud, 'audit-log.jsonl');
+    const logs = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+    chk(logs.some((l) => l.act === '导入发票') && logs.some((l) => l.act === '原件存档') && logs.some((l) => l.act === '已驳回' && l.who === '测试会计'), '操作记录里有导入、存档、驳回（操作人 测试会计），共 ' + logs.length + ' 条');
+    chk(logs.some((l) => l.act === '修改字段' && /e2e 修改/.test(l.detail) && l.who === '测试会计'), '改字段记下了旧值和新值');
+    if (process.env.MAIL_TEST) chk(logs.some((l) => l.act === '确认分录') && logs.some((l) => l.act === '生成凭证'), '凭证确认和生成也有记录');
+    await page.evaluate(() => { location.hash = 'log'; });
+    await page.waitForSelector('[data-act="log-verify"]');
+    await page.click('[data-act="log-verify"]');
+    await page.waitForSelector('#log-verify-res');
+    const vr = await page.evaluate(() => document.querySelector('#log-verify-res').textContent);
+    chk(/校验通过/.test(vr), '操作记录完整性校验：' + vr);
+    await page.screenshot({ path: path.join(out, '18-操作记录.png'), fullPage: true });
+    // 篡改一条记录，校验能发现
+    const raw = fs.readFileSync(logFile, 'utf8');
+    fs.writeFileSync(logFile, raw.replace('测试会计', '别人'));
+    await page.click('[data-act="log-verify"]');
+    await page.waitForTimeout(500);
+    const vr2 = await page.evaluate(() => document.querySelector('#log-verify-res').textContent);
+    chk(/被修改过/.test(vr2), '改了记录文件后校验不通过：' + vr2);
+    fs.writeFileSync(logFile, raw);
+
+    // 职级 × 城市标准：示例里经理在上海住 2 晚，标准 700/晚，发票 1,580
+    await page.evaluate(() => { location.hash = 'ledger'; });
+    await page.waitForSelector('[data-act="samples"]');
+    await page.click('[data-act="samples"]');
+    await page.waitForTimeout(800);
+    const sid = await page.evaluate(() => { const r = Array.from(document.querySelectorAll('tr[data-open]')).find((x) => /香格里拉/.test(x.innerText)); return r && r.getAttribute('data-open'); });
+    chk(!!sid, '示例里有职级标准的发票');
+    if (sid) {
+      await page.evaluate((id) => { location.hash = 'review-' + id; }, sid);
+      await page.waitForSelector('#rv-std');
+      const c1 = await page.evaluate(() => document.querySelector('#rv-checks').innerText);
+      chk(/超出住宿标准/.test(c1) && /经理 · 上海（一类城市）700\.00 元\/晚 × 2 晚/.test(c1), '按 经理 × 上海 × 2 晚 判断超标');
+      await page.screenshot({ path: path.join(out, '19-职级城市标准.png'), fullPage: true });
+      await page.fill('#tr-nights', '3');
+      await page.dispatchEvent('#tr-nights', 'change');
+      await page.waitForTimeout(500);
+      const c2 = await page.evaluate(() => document.querySelector('#rv-checks').innerText);
+      chk(/在住宿标准内/.test(c2) && /× 3 晚/.test(c2), '改成 3 晚后在标准内');
+      await page.fill('#tr-city', '昆山');
+      await page.dispatchEvent('#tr-city', 'change');
+      await page.waitForTimeout(500);
+      const c3 = await page.evaluate(() => document.querySelector('#rv-checks').innerText);
+      chk(/昆山（其他城市）400\.00 元\/晚 × 3 晚/.test(c3) && /超出住宿标准/.test(c3), '没列出的城市按其他城市 400/晚 算');
+    }
+    await page.evaluate(() => { location.hash = 'rules'; });
+    await page.waitForSelector('section[aria-label="职级与城市标准"]');
+    await page.screenshot({ path: path.join(out, '20-规则设置.png'), fullPage: true });
+  }
+
   fs.writeFileSync(path.join(out, 'e2e-report.json'), JSON.stringify(report, null, 2));
   await app.close();
   if (errors.length) { console.log('页面有 ' + errors.length + ' 个脚本错误'); mustFail++; }

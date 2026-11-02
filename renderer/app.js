@@ -12,7 +12,7 @@ var RULES = [
   {id:'sum',       name:'金额不平',       how:'金额 + 税额 与价税合计相差超过 0.01 元', lv:'block'},
   {id:'future',    name:'开票日期在未来', how:'开票日期晚于今天', lv:'block'},
   {id:'nearDup',   name:'疑似重复',       how:'同一销售方、同一天、同一金额，号码不同', lv:'review'},
-  {id:'overLimit', name:'超出报销标准',   how:'按左边各类别的单张上限判断，处理方式在左边设置', lv:null},
+  {id:'overLimit', name:'超出报销标准',   how:'报销人登记了职级的，住宿按 职级 × 城市 × 晚数、餐饮按 职级人均 × 人数；没有职级的按各类别单张上限', lv:null},
   {id:'stale',     name:'超过报销期限',   how:'开票日期距今超过设定天数', lv:'review'},
   {id:'crossYear', name:'跨年度发票',     how:'上一年开具、今年报销：注意费用所属期间和企业所得税汇算清缴', lv:'review'},
   {id:'splitNo',   name:'连号拆票',       how:'同一销售方、同一天开具、发票号码连续，可能为避开单张限额拆开开票', lv:'review'},
@@ -39,7 +39,21 @@ function defaultCfg(){
   return {
     companies:[{name:'上海示例科技有限公司', taxId:'91310115MA1K4A2B3A'}],
     limits:{'餐饮':{v:500,lv:'review'},'住宿':{v:600,lv:'review'},'交通':{v:300,lv:'review'},'办公用品':{v:2000,lv:'review'},'其他':{v:null,lv:'review'}},
-    days:90, big:10000, rates:[0,1,3,5,6,9,13], rules:rules
+    days:90, big:10000, rates:[0,1,3,5,6,9,13], rules:rules, std:defaultStd()
+  };
+}
+// 职级 × 城市的报销标准：住宿按晚（元/晚），餐饮按人均（元/人）
+function defaultStd(){
+  return {
+    on:true, lv:'review',
+    grades:['员工','经理','总监'],
+    tiers:[
+      {name:'一类城市', cities:'北京 上海 广州 深圳'},
+      {name:'二类城市', cities:'杭州 南京 苏州 天津 重庆 成都 武汉 西安 厦门 青岛 宁波 长沙 郑州 合肥 济南 福州 沈阳 大连 昆明 无锡'},
+      {name:'其他城市', cities:''}
+    ],
+    hotel:{'员工':[500,400,300], '经理':[700,550,400], '总监':[1000,800,600]},
+    meal:{'员工':100, '经理':150, '总监':200}
   };
 }
 
@@ -50,6 +64,7 @@ function applyLoaded(p){
   if (p.cfg){ var d = defaultCfg(); cfg = Object.assign(d, p.cfg);
     RULES.forEach(function(r){ if(!cfg.rules[r.id]) cfg.rules[r.id] = {on:true, lv:r.lv}; });
     CATS.forEach(function(k){ if(!cfg.limits[k]) cfg.limits[k] = d.limits[k]; });
+    if (!p.cfg.std) cfg.std = defaultStd();
   }
   invoices = Array.isArray(p.invoices) ? p.invoices : [];
   vouchers = Array.isArray(p.vouchers) ? p.vouchers : [];
@@ -70,6 +85,21 @@ function save(){
     });
   }, 250);
 }
+
+/* ---------- 操作人与操作记录 ---------- */
+// 每次人工操作都记下：谁、什么时候、对哪张发票或凭证、改了什么。记录只追加，带哈希链防篡改。
+var osUser = '', logs = [];
+function who(){ return cfg.operator || osUser || '未设置'; }
+function audLog(act, target, detail, sys){
+  target = target || {};
+  var e = {who: sys ? '系统' : who(), act:act, type:target.type || '', id:target.id || '', label:target.label || '', detail:detail || ''};
+  var tmp = Object.assign({at:new Date().toISOString(), pending:true}, e);
+  logs.push(tmp);
+  return window.api.logAppend(e).then(function(r){ if (r && r.ok){ var i = logs.indexOf(tmp); if (i >= 0) logs[i] = r.data; } });
+}
+function invT(inv){ return {type:'invoice', id:inv.id, label:(inv.f && inv.f.no ? '发票 ' + inv.f.no : (inv.file || '发票')) + (inv.f && inv.f.seller ? ' ' + inv.f.seller : '')}; }
+function cfgLog(detail){ return audLog('修改设置', {type:'cfg', id:'cfg', label:'审核与凭证设置'}, detail); }
+function fv(v){ return v == null || v === '' ? '（空）' : String(v); }
 
 /* ---------- 工具 ---------- */
 function uid(){ return 'i' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
@@ -215,8 +245,12 @@ function audit(inv, all){
     }
   }
 
-  var lim = cfg.limits[f.cat];
-  if (lim && lim.v != null && T != null){
+  var sl = stdLimit(inv), lim = cfg.limits[f.cat];
+  if (sl && T != null){
+    if (T > sl.limit + 0.001) add('overLimit', true, '超出' + sl.label, sl.text + ' = ' + fmt(sl.limit) + '，发票 ' + fmt(T) + '，超出 ' + fmt(r2(T - sl.limit)) + sl.hint, ['total','cat'], std().lv);
+    else add('overLimit', false, '在' + sl.label + '内', sl.text + ' = ' + fmt(sl.limit) + sl.hint);
+  }
+  else if (lim && lim.v != null && T != null){
     if (T > lim.v) add('overLimit', true, '超出' + f.cat + '单张上限', fmt(T) + '，上限 ' + fmt(lim.v), ['total','cat'], lim.lv);
     else add('overLimit', false, '在报销标准内', f.cat + '单张上限 ' + fmt(lim.v));
   }
@@ -279,9 +313,15 @@ function makeSamples(){
     // 跨年度（同时超过报销期限）
     ['数电票（普通发票）','住宿','25312000000198812046',(new Date().getFullYear() - 1) + '-12-26',buyer,bt,'上海和平饭店有限公司','91310000132203456N',528.30,31.70,560.00,6,'*住宿服务*住宿费',0.97,'和平饭店_去年.pdf']
   ];
+  // 职级标准示例：经理在上海住 2 晚，标准 700 元/晚，发票 1,580 元
+  S.push(['数电票（普通发票）','住宿','26312000000221904518',-3,buyer,bt,'上海静安香格里拉大酒店有限公司','91310000607281234C',1490.57,89.43,1580.00,6,'*住宿服务*住宿费',0.97,'香格里拉_2晚.pdf']);
+  var demoEmp = emps().filter(function(e){ return e.name === '王芳（示例）'; })[0];
+  if (!demoEmp){ demoEmp = {id:'e' + uid(), name:'王芳（示例）', dept:'市场部', grade: std().grades[1] || std().grades[0] || '', emails:[], createdAt:Date.now()}; emps().push(demoEmp); }
   return S.map(function(s, i){
-    return {id:uid() + i, createdAt: base + i*1000, source:'sample', file:s[14], status:'ready', conf:s[13], aiNotes: s[13] < 0.8 ? '发票号码区域被折痕遮挡' : '', decision:null, memo:'',
-      f:{type:s[0], cat:s[1], no:s[2], code:'', date: typeof s[3] === 'string' ? s[3] : isoOffset(s[3]), buyer:s[4], buyerTax:s[5], seller:s[6], sellerTax:s[7], amount:s[8], tax:s[9], total:s[10], rate:s[11], items:s[12]}};
+    var last = i === S.length - 1;
+    return {id:uid() + i, createdAt: base + i*1000, source:'sample', employeeId: last ? demoEmp.id : null, file:s[14], status:'ready', conf:s[13], aiNotes: s[13] < 0.8 ? '发票号码区域被折痕遮挡' : '', decision:null, memo:'',
+      f:{type:s[0], cat:s[1], no:s[2], code:'', date: typeof s[3] === 'string' ? s[3] : isoOffset(s[3]), buyer:s[4], buyerTax:s[5], seller:s[6], sellerTax:s[7], amount:s[8], tax:s[9], total:s[10], rate:s[11], items:s[12],
+        lines: last ? [{name:'*住宿服务*住宿费', spec:'高级大床房', unit:'晚', qty:2, price:745.28, amount:1490.57, rate:6, tax:89.43}] : undefined}};
   });
 }
 function emptyFields(){ return {type:'', cat:'其他', no:'', code:'', date:'', buyer:'', buyerTax:'', seller:'', sellerTax:'', amount:null, tax:null, total:null, rate:null, items:'', lines:[]}; }
@@ -561,6 +601,7 @@ function enqueue(files, metas){
     var meta = metas && metas[i];
     if (meta){ inv.source = 'mail'; inv.sender = meta.sender || ''; inv.senderName = meta.senderName || ''; inv.employeeId = meta.employeeId || null; inv.mail = meta.mail || null; }
     invoices.unshift(inv); fileMap[inv.id] = file; queue.push({inv:inv});
+    audLog('导入发票', invT(inv), meta ? '邮件导入：' + (meta.senderName ? meta.senderName + ' ' : '') + '<' + (meta.sender || '') + '>' + (meta.mail && meta.mail.subject ? '「' + meta.mail.subject + '」' : '') + '，文件 ' + file.name : '上传文件 ' + file.name);
   });
   save();
   if (route().v !== 'ledger') location.hash = 'ledger';
@@ -572,11 +613,36 @@ function pump(){
   if (!job){ render(); return; }
   var inv = job.inv;
   busy = true; inv.status = 'recognizing'; render();
-  recognize(inv, fileMap[inv.id], job.opts).catch(function(e){
+  var file = fileMap[inv.id];
+  archiveFile(inv, file).then(function(){ return recognize(inv, file, job.opts); }).then(function(){
+    audLog('识别完成', invT(inv), (METHOD[inv.method] || '') + (inv.conf != null ? '，置信度 ' + Math.round(inv.conf * 100) + '%' : '') + '，价税合计 ' + fmt(num(inv.f.total)), true);
+  }, function(e){ throw e; }).catch(function(e){
     inv.status = 'error'; inv.err = aiErr(e); inv.errCode = (e && e.code) || ''; inv.stage = '';
     if (!inv.f.buyer && cfg.companies[0]){ inv.f.buyer = cfg.companies[0].name; inv.f.buyerTax = cfg.companies[0].taxId; }
   })
   .then(function(){ busy = false; save(); render(); pump(); });
+}
+
+/* 原件存档：识别之前先把原始文件存一份，记下 SHA-256 */
+function archiveFile(inv, file){
+  if (!file || inv.archive) return Promise.resolve();
+  stage(inv, '存档原件');
+  return file.arrayBuffer().then(function(buf){ return window.api.archivePut({name:file.name, data:new Uint8Array(buf), date:new Date(inv.createdAt).toISOString()}); })
+    .then(function(r){
+      if (r && r.ok){ inv.archive = {path:r.data.path, sha256:r.data.sha256, size:r.data.size, at:new Date().toISOString()}; inv.archiveErr = ''; audLog('原件存档', invT(inv), r.data.path + '，SHA-256 ' + r.data.sha256 + (r.data.existed ? '（同一个文件以前存过）' : ''), true); }
+      else inv.archiveErr = (r && r.message) || '存档失败';
+    }, function(e){ inv.archiveErr = (e && e.message) || '存档失败'; });
+}
+var MIME = {pdf:'application/pdf', xml:'text/xml', jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', webp:'image/webp', ofd:''};
+// 重新识别时要原始文件：本次会话有就用，没有（软件重启过）就从存档读
+function getFile(inv){
+  if (fileMap[inv.id]) return Promise.resolve(fileMap[inv.id]);
+  if (!inv.archive) return Promise.resolve(null);
+  return window.api.archiveRead(inv.archive.path).then(function(r){
+    if (!r || !r.ok) throw {message:(r && r.message) || '读不到原件存档'};
+    var ext = ((inv.file || '').match(/\.(\w+)$/) || [])[1] || '';
+    return (fileMap[inv.id] = new File([r.data], inv.file || 'invoice', {type: MIME[ext.toLowerCase()] || ''}));
+  });
 }
 
 /* ---------- 路由与渲染 ---------- */
@@ -589,6 +655,7 @@ function route(){
   if (h === 'staff') return {v:'staff'};
   if (/^voucher(-done|-rules|-u8)?$/.test(h)) return {v:'voucher', tab:h};
   if (h === 'history') return {v:'history'};
+  if (h === 'log') return {v:'log'};
   if (h === 'review') return {v:'review'};
   var m = h.match(/^review-([A-Za-z0-9]+)$/);
   if (m) return {v:'review', id:m[1]};
@@ -596,6 +663,7 @@ function route(){
 }
 function render(){
   var r = route();
+  var on = $('#opName'); if (on) on.textContent = who();
   $$('.nav a').forEach(function(a){ a.classList.toggle('on', a.getAttribute('data-nav') === r.v); if (a.getAttribute('data-nav') === r.v) a.setAttribute('aria-current','page'); else a.removeAttribute('aria-current'); });
   var el = $('#view');
   if (r.v === 'rules') el.innerHTML = viewRules();
@@ -604,6 +672,7 @@ function render(){
   else if (r.v === 'staff') el.innerHTML = viewStaff();
   else if (r.v === 'voucher') el.innerHTML = viewVoucher(r.tab);
   else if (r.v === 'history') el.innerHTML = viewHistory();
+  else if (r.v === 'log') el.innerHTML = viewLog();
   else if (r.v === 'review') el.innerHTML = viewReview(r.id);
   else el.innerHTML = viewLedger();
 }
@@ -694,12 +763,13 @@ function viewLedger(){
   h += '<section class="card pad stack"><h2 class="h">当前生效规则</h2>' +
     '<div class="kv"><span>公司抬头</span><span class="muted">' + cfg.companies.length + ' 个主体</span></div>' +
     ['餐饮','住宿','交通'].map(function(k){ return '<div class="kv"><span>' + k + '单张上限</span><span class="mono">' + (lim[k].v == null ? '不限' : fmt(lim[k].v)) + '</span></div>'; }).join('') +
+    '<div class="kv"><span>职级与城市标准</span><span class="muted">' + (std().on ? std().grades.length + ' 个职级 · ' + std().tiers.length + ' 档城市' : '未启用') + '</span></div>' +
     '<div class="kv"><span>开票后报销期限</span><span class="mono">' + cfg.days + ' 天</span></div>' +
     '<a href="#rules" style="font-size:13px;text-decoration:none;font-weight:500">修改规则 →</a></section>';
   h += '<section class="card pad stack"><h2 class="h">台账数据</h2><div class="actions">' +
     '<button class="btn sm" type="button" data-act="samples">加载示例发票</button>' +
     (invoices.length ? (ui.confirmClear ? '<button class="btn sm danger" type="button" data-act="clear-yes">确认清空 ' + invoices.length + ' 张</button><button class="linkbtn muted" type="button" data-act="clear-no">取消</button>' : '<button class="btn sm" type="button" data-act="clear">清空台账</button>') : '') +
-    '<button class="btn sm" type="button" data-act="open-dir">打开数据文件夹</button><button class="btn sm" type="button" data-act="upd-check">检查更新</button></div>' + (appVer ? '<p class="note">当前版本 v' + esc(appVer) + (isPortable ? '（免安装版）' : '') + '</p>' : '') + '<p class="note">台账只保存在这台电脑：' + esc(dataDir) + '。换电脑或备份时，复制这个文件夹里的 ledger.json 即可。</p></section>';
+    '<button class="btn sm" type="button" data-act="arch-dir">打开原件存档</button><button class="btn sm" type="button" data-act="open-dir">打开数据文件夹</button><button class="btn sm" type="button" data-act="upd-check">检查更新</button></div>' + (appVer ? '<p class="note">当前版本 v' + esc(appVer) + (isPortable ? '（免安装版）' : '') + '</p>' : '') + '<p class="note">台账只保存在这台电脑：' + esc(dataDir) + '。原始发票文件存在 archive 文件夹（按年月），操作记录在 audit-log.jsonl。换电脑或备份时，复制整个文件夹。</p></section>';
   h += '<p class="note">真伪查验需要接入税务数字账户或有资质的第三方查验接口，演示版暂未接入，标为「未接入」。</p></aside></div>';
   return h;
 }
@@ -717,7 +787,7 @@ function viewReview(id){
   var au = A[inv.id];
   var title = (inv.f.seller || inv.file || '未命名发票') + (num(inv.f.total) != null ? ' · ' + fmt(num(inv.f.total)) : '');
   var h = '<div class="rv-head"><a href="#ledger" style="text-decoration:none;font-size:13px">← 返回台账</a><span id="rv-chip">' + chip(inv, au) + '</span>' +
-    (inv.decision ? '<span class="chip idle">' + DEC[inv.decision] + '</span>' : '') +
+    (inv.decision ? '<span class="chip idle">' + DEC[inv.decision] + (inv.decidedBy ? ' · ' + esc(inv.decidedBy) + ' ' + esc(fmtDateTime(inv.decidedAt)) : '') + '</span>' : '') +
     '<h1 id="rv-title">' + esc(title) + '</h1>' +
     '<div class="pager"><span>' + (inQ >= 0 ? '待处理' : '全部') + '第 ' + (pos+1) + ' / ' + list.length + ' 张</span>' +
     '<a class="btn sm" ' + (prev ? 'href="#review-' + prev.id + '"' : 'aria-disabled="true" style="opacity:.45;pointer-events:none"') + '>上一张</a>' +
@@ -725,6 +795,7 @@ function viewReview(id){
 
   h += '<div class="cols"><section class="rv-left" aria-label="发票原件">';
   if (inv.img) h += '<div class="card pad"><img class="orig" src="' + inv.img + '" alt="发票原件：' + esc(inv.file) + '"></div>';
+  h += archiveCard(inv);
   h += '<div class="card pad stack"><div class="sub">' + (inv.img ? '按识别结果还原，黄色是触发规则的字段' : '票面信息（黄色是触发规则的字段）') + '</div><div class="paper-wrap" id="rv-paper">' + paper(inv, au) + '</div></div>';
   h += '<p class="note">' + (inv.source === 'sample' ? '这是示例数据。' : inv.source === 'manual' ? '手动录入。' : '来源文件：' + esc(inv.file) + '。') + (inv.voucher ? ' 已生成凭证 ' + esc(inv.voucher.display) + '。' : '') + (inv.sender ? ' 来自邮件：' + esc(inv.senderName ? inv.senderName + ' <' + inv.sender + '>' : inv.sender) + (inv.mail && inv.mail.subject ? '「' + esc(inv.mail.subject) + '」' : '') + (inv.mail && inv.mail.date ? ' ' + esc(fmtDateTime(inv.mail.date)) : '') + '。' : '') + (inv.method && METHOD[inv.method] ? ' 识别方式：' + METHOD[inv.method] + '。' : '') + (inv.conf != null ? ' 置信度 ' + Math.round(inv.conf*100) + '%。' : '') + (inv.qr ? ' 二维码：已读取' + (inv.qr.mismatch && inv.qr.mismatch.length ? '，' + esc(inv.qr.mismatch.join('、')) + '已按二维码修正' : '，号码和日期一致') + '。' : '') + (inv.aiNotes ? ' 识别备注：' + esc(inv.aiNotes) : '') + '</p></section>';
 
@@ -733,10 +804,11 @@ function viewReview(id){
   if (inv.status === 'recognizing') h += '<div class="progress"><span class="spin"></span>正在识别 ' + esc(inv.file) + '…</div>';
   h += '<section class="card pad stack" aria-label="审核结果" id="rv-checks">' + checksHtml(inv, au) + '</section>';
   h += '<section class="card pad stack" aria-label="识别字段"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap"><h2 class="h">识别字段</h2><span class="sub">改错后自动重新审核</span></div><div class="fgrid" id="rv-fields">' + fieldsHtml(inv, au) + '</div>' +
-    (fileMap[inv.id] ? '<div class="actions"><button class="btn sm" type="button" data-act="retry" data-id="' + inv.id + '"' + (inv.status === 'recognizing' ? ' disabled' : '') + '>重新识别</button>' +
+    (fileMap[inv.id] || inv.archive ? '<div class="actions"><button class="btn sm" type="button" data-act="retry" data-id="' + inv.id + '"' + (inv.status === 'recognizing' ? ' disabled' : '') + '>重新识别</button>' +
       (aiState === 'on' && inv.method !== 'ai' ? '<button class="btn sm" type="button" data-act="retry-ai" data-id="' + inv.id + '"' + (inv.status === 'recognizing' ? ' disabled' : '') + '>用 AI 重新识别</button>' : '') +
       (aiState !== 'on' && inv.method === 'ocr' ? '<a class="btn sm" href="#ai">开启 AI 识别更准</a>' : '') + '</div>' : '') + '</section>';
   var curEmp = employeeOf(inv);
+  h += '<section class="card pad stack" aria-label="报销标准" id="rv-std">' + stdCard(inv) + '</section>';
   h += '<section class="card pad stack" aria-label="复核处理">' +
     '<label class="fld" for="rv-emp">报销人<select id="rv-emp" data-id="' + inv.id + '"><option value="">' + (inv.sender ? '未登记（' + esc(inv.sender) + '）' : '未指定') + '</option>' +
       emps().slice().sort(function(a, b){ return byName(a.name, b.name); }).map(function(e){ return '<option value="' + e.id + '"' + (curEmp && curEmp.id === e.id ? ' selected' : '') + '>' + esc(e.name + (e.dept ? '（' + e.dept + '）' : '')) + '</option>'; }).join('') + '</select></label>' +
@@ -746,8 +818,42 @@ function viewReview(id){
     '<button class="btn lg primary grow" type="button" data-dec="approved" data-id="' + inv.id + '"' + (inv.status !== 'ready' ? ' disabled' : '') + '>人工通过</button></div>' +
     '<div class="actions" style="font-size:12px">' + (inv.decision ? '<button class="linkbtn muted" type="button" data-dec="" data-id="' + inv.id + '">撤销处理结果</button>' : '') +
     (ui.confirmDel ? '<button class="linkbtn" style="color:var(--block)" type="button" data-act="del-yes" data-id="' + inv.id + '">确认删除这张发票</button><button class="linkbtn muted" type="button" data-act="del-no">取消</button>' : '<button class="linkbtn muted" type="button" data-act="del">从台账删除</button>') +
-    '</div></section></div></div>';
+    '</div></section>' + invLogCard(inv) + '</div></div>';
   return h;
+}
+function archiveCard(inv){
+  if (inv.source === 'sample') return '<div class="card pad arch"><span class="chip idle">示例</span><span class="sub">示例数据没有原件</span></div>';
+  if (inv.source === 'manual') return '<div class="card pad arch"><span class="chip review">无原件</span><span class="sub">手动录入的发票没有电子原件，纸质原件请另行归档</span></div>';
+  if (!inv.archive) return '<div class="card pad arch"><span class="chip ' + (inv.archiveErr ? 'block' : 'idle') + '">' + (inv.archiveErr ? '存档失败' : inv.status === 'recognizing' ? '正在存档' : '未存档') + '</span><span class="sub">' + esc(inv.archiveErr || (inv.status === 'recognizing' ? '' : '这张发票是旧版本导入的，没有保存原件')) + '</span></div>';
+  var a = inv.archive;
+  return '<div class="card pad arch" aria-label="原件存档"><span class="chip pass">原件已存档</span><div class="stack" style="gap:2px;min-width:0;flex:1"><span class="mono sub" style="overflow-wrap:anywhere">' + esc(a.path) + ' · ' + fmtSize(a.size || 0) + '</span>' +
+    '<span class="mono sub" title="' + esc(a.sha256) + '">SHA-256 ' + esc(a.sha256.slice(0, 16)) + '…' + esc(a.sha256.slice(-8)) + '</span></div>' +
+    '<div class="actions"><button class="btn sm" type="button" data-act="arch-open" data-id="' + inv.id + '">打开原件</button><button class="btn sm" type="button" data-act="arch-verify" data-id="' + inv.id + '">校验</button></div></div>';
+}
+function stdCard(inv){
+  var cat = inv.f.cat, S = std();
+  if (inv.status !== 'ready' || (cat !== '住宿' && cat !== '餐饮')) return '<h2 class="h">报销标准</h2><span class="sub">' + (inv.status === 'ready' ? esc(cat) + '类按单张上限' + (cfg.limits[cat] && cfg.limits[cat].v != null ? ' ' + fmt(cfg.limits[cat].v) : '（不限）') + '审核，在「规则设置」里修改' : '识别完成后显示') + '</span>';
+  var e = employeeOf(inv), g = stdGrade(inv), tr = inv.trip || {};
+  var h = '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap"><h2 class="h">报销标准</h2><span class="sub">' +
+    (!S.on ? '职级标准已关闭，按单张上限审核' : !e ? '先指定报销人，才能按职级标准审核' : !g ? '「' + esc(e.name) + '」还没设职级，按单张上限审核。<a href="#staff">去设置职级</a>' : esc(e.name) + ' · ' + esc(g)) + '</span></div>';
+  if (cat === '住宿'){
+    var c = cityOf(inv), nn = nightsOf(inv);
+    h += '<div class="fgrid"><label class="fld" for="tr-city">出差城市' + (c.auto && c.city ? '（自动识别）' : '') + '<input id="tr-city" data-trip="city" list="city-list" value="' + esc(tr.city || '') + '" placeholder="' + esc(c.city || '例如 上海') + '"></label>' +
+      '<label class="fld" for="tr-nights">住宿晚数' + (nn.auto && !nn.guessed ? '（按明细）' : '') + '<input id="tr-nights" data-trip="nights" class="mono" inputmode="numeric" value="' + esc(tr.nights || '') + '" placeholder="' + nn.n + '"></label></div>' +
+      '<datalist id="city-list">' + allCities().map(function(x){ return '<option value="' + esc(x) + '">'; }).join('') + '</datalist>';
+  } else {
+    h += '<div class="fgrid"><label class="fld" for="tr-persons">用餐人数<input id="tr-persons" data-trip="persons" class="mono" inputmode="numeric" value="' + esc(tr.persons || '') + '" placeholder="1"></label>' +
+      '<span class="sub" style="align-self:end">招待客户的，在复核意见里写明客户单位和人数</span></div>';
+  }
+  var sl = stdLimit(inv);
+  if (sl) h += '<div class="' + (num(inv.f.total) > sl.limit + 0.001 ? 'status-bad' : 'status-ok') + '" id="std-res">' + esc(sl.text) + ' = ' + fmt(sl.limit) + '；发票 ' + fmt(num(inv.f.total)) + '</div>';
+  return h;
+}
+function invLogCard(inv){
+  var L = logs.filter(function(l){ return l.id === inv.id; }).slice(-30).reverse();
+  if (!L.length) return '';
+  return '<section class="card pad stack" aria-label="处理记录"><div style="display:flex;justify-content:space-between;align-items:baseline"><h2 class="h">处理记录</h2><a href="#log" class="sub" data-act="log-for" data-id="' + inv.id + '">全部操作记录 →</a></div><ol class="loglist">' +
+    L.map(function(l){ return '<li><span class="mono muted">' + esc(fmtDateTime(l.at)) + '</span> <b>' + esc(l.who) + '</b> ' + esc(l.act) + (l.detail ? '<span class="sub">' + esc(l.detail) + '</span>' : '') + '</li>'; }).join('') + '</ol></section>';
 }
 function checksHtml(inv, au){
   if (!au) return '<h2 class="h">审核结果</h2><span class="sub">识别完成后自动审核</span>';
@@ -800,6 +906,8 @@ function refreshReview(inv){
   var c = $('#rv-checks'); if (c) c.innerHTML = checksHtml(inv, au);
   var p = $('#rv-paper'); if (p) p.innerHTML = paper(inv, au);
   var ch = $('#rv-chip'); if (ch) ch.innerHTML = chip(inv, au);
+  var sd = $('#rv-std'); if (sd && !sd.contains(document.activeElement)) sd.innerHTML = stdCard(inv);
+  else { var sr = $('#std-res'), sl = stdLimit(inv); if (sr && sl){ sr.className = num(inv.f.total) > sl.limit + 0.001 ? 'status-bad' : 'status-ok'; sr.textContent = sl.text + ' = ' + fmt(sl.limit) + '；发票 ' + fmt(num(inv.f.total)); } }
   var t = $('#rv-title'); if (t) t.textContent = (inv.f.seller || inv.file || '未命名发票') + (num(inv.f.total) != null ? ' · ' + fmt(num(inv.f.total)) : '');
   var hs = hlSet(au);
   $$('#rv-fields .fld').forEach(function(l){ var k = l.getAttribute('for').slice(2); l.classList.toggle('hl', !!hs[k]); });
@@ -813,9 +921,10 @@ function viewRules(){
     '<div class="tbl-wrap"><table class="rtbl"><thead><tr><th>公司名称</th><th>纳税人识别号</th><th></th></tr></thead><tbody>' +
     cfg.companies.map(function(c, i){ return '<tr><td><input class="inp" aria-label="公司名称" data-co="' + i + '" data-key="name" value="' + esc(c.name) + '"></td><td><input class="inp mono" aria-label="纳税人识别号" data-co="' + i + '" data-key="taxId" value="' + esc(c.taxId) + '"></td><td style="text-align:right"><button class="linkbtn muted" type="button" data-act="co-del" data-i="' + i + '">删除</button></td></tr>'; }).join('') +
     '</tbody></table></div><button class="btn dashed" style="align-self:flex-start" type="button" data-act="co-add">＋ 添加公司主体</button></section>';
-  h += '<section class="card pad stack"><div><h2 class="h">报销标准</h2><span class="sub">按费用类别设单张上限，留空表示不限</span></div><div class="tbl-wrap"><table class="rtbl"><thead><tr><th>类别</th><th>单张上限（元）</th><th>超出时</th></tr></thead><tbody>' +
+  h += '<section class="card pad stack"><div><h2 class="h">单张上限</h2><span class="sub">按费用类别设单张上限，留空表示不限。报销人有职级的住宿、餐饮发票，改用下面的职级与城市标准</span></div><div class="tbl-wrap"><table class="rtbl"><thead><tr><th>类别</th><th>单张上限（元）</th><th>超出时</th></tr></thead><tbody>' +
     CATS.map(function(k){ var l = cfg.limits[k]; return '<tr><td>' + k + '</td><td><input class="inp mono" style="max-width:140px" inputmode="decimal" aria-label="' + k + '单张上限" data-lim="' + k + '" value="' + (l.v == null ? '' : l.v) + '" placeholder="不限"></td><td><select class="lv ' + l.lv + '" aria-label="' + k + '超出时处理" data-limlv="' + k + '"><option value="review"' + (l.lv === 'review' ? ' selected' : '') + '>转人工复核</option><option value="block"' + (l.lv === 'block' ? ' selected' : '') + '>直接拦截</option></select></td></tr>'; }).join('') +
     '</tbody></table></div></section>';
+  h += stdSettings();
   h += '<section class="card pad stack"><h2 class="h">时间、金额与税率</h2><div class="fgrid">' +
     '<label class="fld" for="c-days">开票后多少天内可报销<input id="c-days" class="mono" inputmode="numeric" data-num="days" value="' + cfg.days + '"></label>' +
     '<label class="fld" for="c-big">单张超过多少元提醒复核<input id="c-big" class="mono" inputmode="decimal" data-num="big" value="' + (cfg.big == null ? '' : cfg.big) + '"></label></div>' +
@@ -832,6 +941,25 @@ function viewRules(){
   return h;
 }
 
+function stdSettings(){
+  var S = std();
+  var h = '<section class="card pad stack" aria-label="职级与城市标准"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:flex-start"><div><h2 class="h">职级与城市标准</h2><span class="sub">住宿：按 报销人职级 × 出差城市 × 晚数 算上限；餐饮：按 职级人均 × 人数。员工的职级在「员工」页设置。</span></div>' +
+    '<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" id="std-on"' + (S.on ? ' checked' : '') + ' style="width:18px;height:18px;accent-color:var(--accent)">启用</label></div>';
+  h += '<div class="tbl-wrap"><table class="rtbl" style="min-width:560px"><thead><tr><th>职级</th>' + S.tiers.map(function(t){ return '<th>住宿 · ' + esc(t.name) + '<br><span class="sub">元/晚</span></th>'; }).join('') + '<th>餐饮人均<br><span class="sub">元/人</span></th><th></th></tr></thead><tbody>' +
+    S.grades.map(function(g){
+      return '<tr><td class="nowrap"><b>' + esc(g) + '</b></td>' + S.tiers.map(function(t, i){ var v = (S.hotel[g] || [])[i]; return '<td><input class="inp mono" style="max-width:100px" inputmode="decimal" aria-label="' + esc(g + t.name + '住宿标准') + '" data-hotel="' + esc(g) + '" data-ti="' + i + '" value="' + (v == null ? '' : v) + '" placeholder="不限"></td>'; }).join('') +
+        '<td><input class="inp mono" style="max-width:100px" inputmode="decimal" aria-label="' + esc(g) + '餐饮人均标准" data-meal="' + esc(g) + '" value="' + (S.meal[g] == null ? '' : S.meal[g]) + '" placeholder="不限"></td>' +
+        '<td style="text-align:right"><button class="linkbtn muted" type="button" data-act="sg-del" data-g="' + esc(g) + '">删除</button></td></tr>';
+    }).join('') + '</tbody></table></div>' +
+    '<div class="actions"><input id="sg-new" class="inp" style="max-width:160px" placeholder="新职级，例如 副总" aria-label="新职级名称"><button class="btn sm" type="button" data-act="sg-add">添加职级</button>' +
+    '<label class="fld" for="std-lv" style="flex-direction:row;align-items:center;gap:6px;margin-left:auto">超出标准时<select id="std-lv" class="lv ' + S.lv + '"><option value="review"' + (S.lv === 'review' ? ' selected' : '') + '>转人工复核</option><option value="block"' + (S.lv === 'block' ? ' selected' : '') + '>直接拦截</option></select></label></div>';
+  h += '<div class="stack" style="gap:8px"><span class="sub">城市分类（城市名用空格隔开；软件从销售方名称里找城市，找不到可以在复核页手动填）</span>' +
+    S.tiers.map(function(t, i){
+      var last = i === S.tiers.length - 1;
+      return '<label class="fld" for="tier-' + i + '">' + esc(t.name) + (last ? '<span class="sub" style="padding:8px 0">上面没有列出的城市都按这一档</span>' : '<textarea id="tier-' + i + '" rows="2" data-tier="' + i + '">' + esc(t.cities) + '</textarea>') + '</label>';
+    }).join('') + '</div></section>';
+  return h;
+}
 function viewAI(){
   var info = aiInfo || {provider:'qwen', providers:{}, model:'', baseUrl:'', hasKey:false, keyTail:''};
   var P = info.providers || {};
@@ -889,10 +1017,53 @@ function personGroups(list){
   return Object.keys(g).map(function(k){ return g[k]; }).sort(function(a, b){ return a.kind - b.kind || byName(a.label, b.label); });
 }
 function subDate(inv){ var d = inv.mail && inv.mail.date ? new Date(inv.mail.date) : new Date(inv.createdAt); return isNaN(d) ? new Date(inv.createdAt) : d; }
+/* ---------- 职级与城市标准 ---------- */
+function std(){ if (!cfg.std || !cfg.std.grades) cfg.std = defaultStd(); return cfg.std; }
+function tierCities(t){ return String(t.cities || '').split(/[\s,，、;；]+/).filter(Boolean); }
+function allCities(){ var o = []; std().tiers.forEach(function(t){ tierCities(t).forEach(function(c){ if (o.indexOf(c) < 0) o.push(c); }); }); return o; }
+// 城市：复核时填的优先；否则从销售方名称、项目里找标准里列出的城市
+function cityOf(inv){
+  if (inv.trip && inv.trip.city) return {city:inv.trip.city, auto:false};
+  var f = inv.f, s = (f.seller || '') + ' ' + (f.items || '') + ' ' + (f.lines || []).map(function(l){ return (l && l.name) || ''; }).join(' ');
+  var hit = allCities().filter(function(c){ return s.indexOf(c) >= 0; }).sort(function(a, b){ return s.indexOf(a) - s.indexOf(b); })[0];
+  return {city:hit || '', auto:true};
+}
+function tierOf(city){
+  var T = std().tiers;
+  for (var i = 0; i < T.length - 1; i++) if (tierCities(T[i]).indexOf(city) >= 0) return i;
+  return T.length - 1;   // 没列出的城市按最后一档
+}
+// 晚数：复核时填的优先；否则看明细里单位是 天/晚/间夜 的数量；都没有按 1 晚
+function nightsOf(inv){
+  if (inv.trip && num(inv.trip.nights) > 0) return {n:num(inv.trip.nights), auto:false};
+  var L = (inv.f.lines || []).filter(function(l){ return l && /^(天|晚|夜|间夜|间\/夜|间·夜)$/.test(String(l.unit || '').trim()) && num(l.qty) > 0; });
+  var n = L.reduce(function(x, l){ return x + num(l.qty); }, 0);
+  return {n: n > 0 ? n : 1, auto:true, guessed: !(n > 0)};
+}
+function stdGrade(inv){ var e = employeeOf(inv); return e && e.grade && std().grades.indexOf(e.grade) >= 0 ? e.grade : ''; }
+// 返回这张发票适用的职级标准；不适用（标准关闭、没有职级、类别不是住宿餐饮）返回 null，改用单张上限
+function stdLimit(inv){
+  var S = std(), g = stdGrade(inv), cat = inv.f.cat;
+  if (!S.on || !g) return null;
+  if (cat === '住宿'){
+    var c = cityOf(inv), ti = tierOf(c.city), per = num((S.hotel[g] || [])[ti]);
+    if (per == null) return null;
+    var nn = nightsOf(inv);
+    return {label:'住宿标准', limit:r2(per * nn.n), text: g + ' · ' + (c.city || '未识别城市') + '（' + S.tiers[ti].name + '）' + fmtN(per) + ' 元/晚 × ' + nn.n + ' 晚',
+      hint: (!c.city ? '。没识别出城市，按' + S.tiers[ti].name + '算，可在下方填写城市' : '') + (nn.guessed ? '。没识别出晚数，按 1 晚算，可在下方填写' : '')};
+  }
+  if (cat === '餐饮'){
+    var pp = num(S.meal[g]);
+    if (pp == null) return null;
+    var n = inv.trip && num(inv.trip.persons) > 0 ? num(inv.trip.persons) : 0;
+    return {label:'餐饮标准', limit:r2(pp * (n || 1)), text: g + ' · 人均 ' + fmtN(pp) + ' 元 × ' + (n || 1) + ' 人', hint: n ? '' : '。没填用餐人数，按 1 人算，可在下方填写'};
+  }
+  return null;
+}
 function dayOf(d){ return d.getFullYear() + '-' + ('0'+(d.getMonth()+1)).slice(-2) + '-' + ('0'+d.getDate()).slice(-2); }
 
 var staffUi = {editId:null, draft:null, error:'', confirmDel:null};
-function staffDraft(){ return staffUi.draft || {name:'', dept:'', emails:''}; }
+function staffDraft(){ return staffUi.draft || {name:'', dept:'', grade:'', emails:''}; }
 function viewStaff(){
   var list = emps().slice().sort(function(a, b){ return byName(a.name, b.name); });
   var d = staffDraft(), editing = staffUi.editId ? empById(staffUi.editId) : null;
@@ -902,15 +1073,16 @@ function viewStaff(){
   h += '<div class="cols"><section class="card pad stack" style="flex:1 1 360px;min-width:0" aria-label="登记员工"><h2 class="h">' + (editing ? '修改：' + esc(editing.name) : '登记员工') + '</h2>' +
     '<label class="fld" for="st-name">姓名<input id="st-name" value="' + esc(d.name) + '" placeholder="例如 张三"></label>' +
     '<label class="fld" for="st-dept">部门（可不填）<input id="st-dept" value="' + esc(d.dept) + '" placeholder="例如 市场部"></label>' +
+    '<label class="fld" for="st-grade">职级（决定住宿、餐饮报销标准）<select id="st-grade"><option value="">未设置（按单张上限审核）</option>' + std().grades.map(function(g){ return '<option' + (d.grade === g ? ' selected' : '') + '>' + esc(g) + '</option>'; }).join('') + '</select></label>' +
     '<label class="fld" for="st-emails">邮箱（可以填多个，每行一个或用逗号隔开）<textarea id="st-emails" rows="4" class="mono" placeholder="zhangsan@company.com&#10;12345678@qq.com">' + esc(d.emails) + '</textarea></label>' +
     (staffUi.error ? '<div class="errbox" role="alert">' + esc(staffUi.error) + '</div>' : '') +
     '<div class="actions"><button class="btn lg primary" type="button" data-act="st-save">' + (editing ? '保存修改' : '添加员工') + '</button>' + (editing || d.name || d.emails ? '<button class="btn lg" type="button" data-act="st-cancel">取消</button>' : '') + '</div></section>';
   h += '<section class="card" style="flex:999 1 560px;min-width:0" aria-label="员工列表"><div class="filters"><b>已登记 ' + list.length + ' 人</b></div>';
   if (!list.length) h += '<div class="empty">还没有登记员工。在左边填姓名和邮箱，点「添加员工」。</div>';
   else {
-    h += '<div class="tbl-wrap"><table class="tbl" style="min-width:560px"><thead><tr><th>姓名</th><th>部门</th><th>邮箱</th><th class="num">发票</th><th></th></tr></thead><tbody>';
+    h += '<div class="tbl-wrap"><table class="tbl" style="min-width:560px"><thead><tr><th>姓名</th><th>部门</th><th>职级</th><th>邮箱</th><th class="num">发票</th><th></th></tr></thead><tbody>';
     list.forEach(function(e){
-      h += '<tr><td class="nowrap"><b>' + esc(e.name) + '</b></td><td class="muted nowrap">' + esc(e.dept || '—') + '</td><td><div style="display:flex;gap:4px;flex-wrap:wrap">' +
+      h += '<tr><td class="nowrap"><b>' + esc(e.name) + '</b></td><td class="muted nowrap">' + esc(e.dept || '—') + '</td><td class="nowrap">' + (e.grade ? esc(e.grade) : '<span class="muted">—</span>') + '</td><td><div style="display:flex;gap:4px;flex-wrap:wrap">' +
         (e.emails || []).map(function(m){ return '<span class="chip idle mono" style="font-weight:400">' + esc(m) + '</span>'; }).join('') + '</div></td>' +
         '<td class="num mono">' + (counts[e.id] ? '<a href="#history" data-act="st-hist" data-id="' + e.id + '">' + counts[e.id] + ' 张</a>' : '0') + '</td><td class="nowrap" style="text-align:right">' +
         (staffUi.confirmDel === e.id ? '<button class="linkbtn" style="color:var(--block)" type="button" data-act="st-del-yes" data-id="' + e.id + '">确认删除</button> <button class="linkbtn muted" type="button" data-act="st-del-no">取消</button>'
@@ -935,9 +1107,9 @@ function viewStaff(){
   return h;
 }
 function staffSave(){
-  var name = $('#st-name').value.trim(), dept = $('#st-dept').value.trim(), raw = $('#st-emails').value;
+  var name = $('#st-name').value.trim(), dept = $('#st-dept').value.trim(), raw = $('#st-emails').value, grade = ($('#st-grade') || {}).value || '';
   var emails = parseSenders(raw);
-  staffUi.draft = {name:name, dept:dept, emails:raw};
+  staffUi.draft = {name:name, dept:dept, grade:grade, emails:raw};
   if (!name){ staffUi.error = '请填写姓名'; render(); return; }
   var bad = String(raw).split(/[\s,，;；、]+/).filter(function(x){ return x.trim() && parseSenders(x).length === 0; });
   if (bad.length){ staffUi.error = '这些不是有效的邮箱：' + bad.join('、'); render(); return; }
@@ -949,8 +1121,12 @@ function staffSave(){
     var o = empByEmail(emails[i]);
     if (o && o.id !== me){ staffUi.error = emails[i] + ' 已经登记给「' + o.name + '」了，一个邮箱只能属于一个人'; render(); return; }
   }
-  if (me){ var e = empById(me); e.name = name; e.dept = dept; e.emails = emails; toast('已保存「' + name + '」'); }
-  else { emps().push({id:'e' + uid(), name:name, dept:dept, emails:emails, createdAt:Date.now()}); toast('已添加「' + name + '」，' + emails.length + ' 个邮箱'); }
+  var empT = {type:'employee', id:me || '', label:'员工 ' + name};
+  if (me){ var e = empById(me), ch = [];
+    if (e.name !== name) ch.push('姓名 ' + e.name + ' → ' + name); if ((e.dept || '') !== dept) ch.push('部门 ' + fv(e.dept) + ' → ' + fv(dept));
+    if ((e.grade || '') !== grade) ch.push('职级 ' + fv(e.grade) + ' → ' + fv(grade)); if ((e.emails || []).join() !== emails.join()) ch.push('邮箱 ' + emails.join('、'));
+    e.name = name; e.dept = dept; e.grade = grade; e.emails = emails; if (ch.length) audLog('修改员工', empT, ch.join('；')); toast('已保存「' + name + '」'); }
+  else { var ne = {id:'e' + uid(), name:name, dept:dept, grade:grade, emails:emails, createdAt:Date.now()}; emps().push(ne); empT.id = ne.id; audLog('登记员工', empT, [dept, grade, emails.join('、')].filter(Boolean).join('；')); toast('已添加「' + name + '」，' + emails.length + ' 个邮箱'); }
   staffUi = {editId:null, draft:null, error:'', confirmDel:null};
   save(); render();
 }
@@ -958,11 +1134,12 @@ function staffAction(act, t){
   var id = t.getAttribute('data-id');
   if (act === 'st-save'){ staffSave(); return; }
   if (act === 'st-cancel'){ staffUi = {editId:null, draft:null, error:'', confirmDel:null}; render(); return; }
-  if (act === 'st-edit'){ var e = empById(id); staffUi = {editId:id, draft:{name:e.name, dept:e.dept || '', emails:(e.emails || []).join('\n')}, error:'', confirmDel:null}; render(); window.scrollTo(0, 0); $('#st-name').focus(); return; }
+  if (act === 'st-edit'){ var e = empById(id); staffUi = {editId:id, draft:{name:e.name, dept:e.dept || '', grade:e.grade || '', emails:(e.emails || []).join('\n')}, error:'', confirmDel:null}; render(); window.scrollTo(0, 0); $('#st-name').focus(); return; }
   if (act === 'st-del'){ staffUi.confirmDel = id; render(); return; }
   if (act === 'st-del-no'){ staffUi.confirmDel = null; render(); return; }
   if (act === 'st-del-yes'){
     var ex = empById(id);
+    if (ex) audLog('删除员工', {type:'employee', id:id, label:'员工 ' + ex.name}, '');
     cfg.employees = emps().filter(function(e){ return e.id !== id; });
     invoices.forEach(function(i){ if (i.employeeId === id) i.employeeId = null; });
     staffUi.confirmDel = null; save(); render(); toast('已删除「' + (ex ? ex.name : '') + '」，他的发票还在台账里');
@@ -1068,6 +1245,69 @@ function histRange(r){
   render();
 }
 function histRefresh(){ var el = $('#hist-results'); if (el) el.innerHTML = histResults(); }
+
+/* ---------- 操作记录 ---------- */
+var logUi = {who:'', type:'', from:'', to:'', q:'', verify:null};
+var LOG_TYPES = [['', '全部'], ['invoice', '发票'], ['voucher', '凭证'], ['employee', '员工'], ['cfg', '设置'], ['ledger', '台账']];
+function logMatches(){
+  var q = logUi.q.trim().toLowerCase();
+  return logs.filter(function(l){
+    if (logUi.who && l.who !== logUi.who) return false;
+    if (logUi.type && l.type !== logUi.type) return false;
+    var d = dayOf(new Date(l.at));
+    if (logUi.from && d < logUi.from) return false;
+    if (logUi.to && d > logUi.to) return false;
+    if (q && [l.act, l.label, l.detail, l.who].join(' ').toLowerCase().indexOf(q) < 0) return false;
+    return true;
+  }).slice().reverse();
+}
+function logRows(){
+  var L = logMatches(), shown = L.slice(0, 500);
+  var h = '<section class="card" aria-label="记录列表"><div class="filters" style="justify-content:space-between"><b>' + L.length + ' 条记录</b>' + (L.length ? '<button class="btn sm" type="button" data-act="log-export">导出 Excel</button>' : '') + '</div>';
+  if (!L.length) return h + '<div class="empty">没有符合条件的操作记录</div></section>';
+  h += '<div class="tbl-wrap"><table class="tbl" style="min-width:900px"><thead><tr><th>时间</th><th>操作人</th><th>操作</th><th>对象</th><th>内容</th></tr></thead><tbody>' +
+    shown.map(function(l){
+      var open = l.type === 'invoice' && findInv(l.id) ? ' data-open="' + esc(l.id) + '" tabindex="0"' : ' style="cursor:default"';
+      return '<tr' + open + '><td class="mono nowrap" style="font-size:12px">' + esc(fmtDateTime(l.at)) + (l.at ? ':' + ('0' + new Date(l.at).getSeconds()).slice(-2) : '') + '</td><td class="nowrap">' + (l.who === '系统' ? '<span class="muted">系统</span>' : esc(l.who)) + '</td><td class="nowrap"><b>' + esc(l.act) + '</b></td><td>' + esc(l.label) + '</td><td class="muted" style="font-size:12px;overflow-wrap:anywhere">' + esc(l.detail) + '</td></tr>';
+    }).join('') + '</tbody></table></div>' + (L.length > shown.length ? '<div class="tbl-foot"><span>只显示最近 500 条，导出 Excel 可以看全部</span></div>' : '') + '</section>';
+  return h;
+}
+function viewLog(){
+  var people = {};
+  logs.forEach(function(l){ people[l.who] = 1; });
+  var h = '<div class="rl-head"><div class="stack" style="gap:4px"><h1>操作记录</h1><span class="muted" style="font-size:13px">谁、在什么时候、对哪张发票或凭证、做了什么，都会自动记下来。记录只能追加，不能修改或删除；每条带上一条的哈希值，被改动过可以校验出来。</span></div>' +
+    '<div class="actions grow" style="margin-left:auto"><button class="btn" type="button" data-act="log-verify">校验记录完整性</button></div></div>';
+  if (logUi.verify) h += '<div class="' + (logUi.verify.ok ? 'status-ok' : 'status-bad') + '" role="status" id="log-verify-res">' + esc(logUi.verify.msg) + '</div>';
+  h += '<section class="card pad stack" aria-label="筛选"><div class="hist-grid">' +
+    '<label class="fld" for="log-who">操作人<select id="log-who"><option value="">全部</option>' + Object.keys(people).sort(byName).map(function(p){ return '<option' + (logUi.who === p ? ' selected' : '') + '>' + esc(p) + '</option>'; }).join('') + '</select></label>' +
+    '<label class="fld" for="log-type">对象<select id="log-type">' + LOG_TYPES.map(function(o){ return '<option value="' + o[0] + '"' + (logUi.type === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></label>' +
+    '<label class="fld" for="log-from">从<input id="log-from" type="date" value="' + esc(logUi.from) + '"></label>' +
+    '<label class="fld" for="log-to">到<input id="log-to" type="date" value="' + esc(logUi.to) + '"></label>' +
+    '<label class="fld" for="log-q">关键字<input id="log-q" value="' + esc(logUi.q) + '" placeholder="发票号、销售方、操作"></label></div></section>';
+  return h + '<div id="log-rows">' + logRows() + '</div>';
+}
+function logRefresh(){ var el = $('#log-rows'); if (el) el.innerHTML = logRows(); }
+function exportLog(){
+  if (!window.XLSX) return;
+  var L = logMatches(), rows = [['序号','时间','操作人','操作','对象类型','对象','内容','哈希']];
+  var TN = {}; LOG_TYPES.forEach(function(o){ TN[o[0]] = o[1]; });
+  L.slice().reverse().forEach(function(l){ rows.push([l.seq || '', fmtDateTime(l.at) + ':' + ('0' + new Date(l.at).getSeconds()).slice(-2), l.who, l.act, TN[l.type] || l.type, l.label, l.detail, l.hash || '']); });
+  var XL = window.XLSX, wb = XL.utils.book_new(), ws = XL.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [6,20,10,14,8,36,60,20].map(function(w){ return {wch:w}; });
+  XL.utils.book_append_sheet(wb, ws, '操作记录');
+  audLog('导出操作记录', {type:'ledger', id:'log', label:'操作记录'}, L.length + ' 条');
+  window.api.saveFile('操作记录_' + dayOf(new Date()).replace(/-/g, '') + '.xlsx', new Uint8Array(XL.write(wb, {type:'array', bookType:'xlsx'}))).then(function(r){ if (r && r.ok && r.data.saved) toast('已导出 ' + L.length + ' 条记录'); });
+}
+function openOperator(){
+  var bg = document.createElement('div');
+  bg.className = 'modal-bg'; bg.id = 'op-modal';
+  bg.innerHTML = '<div class="modal" role="dialog" aria-modal="true" aria-labelledby="op-title" style="width:min(440px,100%)"><h2 id="op-title">切换操作人</h2>' +
+    '<p class="note">之后的审核、修改、确认凭证都会记在这个名字下。几个人用同一台电脑时，换人操作前先切换。</p>' +
+    '<label class="fld" for="op-name">操作人姓名<input id="op-name" list="op-list" value="' + esc(cfg.operator || '') + '" placeholder="' + esc(osUser || '例如 张会计') + '"><datalist id="op-list">' + (cfg.operators || []).map(function(n){ return '<option value="' + esc(n) + '">'; }).join('') + '</datalist></label>' +
+    '<div class="actions"><button class="btn lg" type="button" data-act="op-cancel">取消</button><button class="btn lg primary grow" type="button" data-act="op-ok">确定</button></div></div>';
+  document.body.appendChild(bg);
+  $('#op-name').focus(); $('#op-name').select();
+}
 
 /* ---------- 邮箱收票 ---------- */
 var mailInfo = null;
@@ -1341,7 +1581,11 @@ function storeDraft(v){
   v.edited = true;
   return v;
 }
-function vlog(v, text){ (v.log = v.log || []).push({at:new Date().toISOString(), text:text}); }
+function vlog(v, text){
+  (v.log = v.log || []).push({at:new Date().toISOString(), who:who(), text:text});
+  var act = /^确认分录$/.test(text) ? '确认分录' : /^生成凭证/.test(text) ? '生成凭证' : /^撤回确认$/.test(text) ? '撤回确认' : '修改分录';
+  audLog(act, {type:'voucher', id:v.id, label:'凭证 ' + (v.personLabel || '') + ' ' + (v.day || v.date || '')}, text);
+}
 
 /* ---------- 凭证页 ---------- */
 var vUi = {u8:null, u8Status:null, u8Testing:false, posting:{}, viewer:null, learn:null, acctMsg:''};
@@ -1385,7 +1629,9 @@ function voucherCard(v, editable){
   if (chk.errs.length) h += '<ul class="errlist">' + chk.errs.map(function(e){ return '<li>' + esc(e) + '</li>'; }).join('') + '</ul>';
   if (chk.warns.length) h += '<ul class="warnlist">' + chk.warns.map(function(e){ return '<li>' + esc(e) + '</li>'; }).join('') + '</ul>';
   h += '<div class="sub">发票：' + invs.map(function(i){ return '<a href="#review-' + i.id + '">' + esc((i.f.no || i.file || '').slice(-8)) + ' ' + esc(i.f.seller || '') + ' ' + fmt(num(i.f.total)) + '</a>'; }).join('，') + '</div>';
-  if (v.status === 'posted' && v.u8) h += '<div class="sub">已传入 U8：' + esc(v.u8.display) + '（' + esc(v.u8.period || '') + '，状态 ' + esc(v.u8.status || '') + '）· ' + esc(fmtDateTime(v.postedAt)) + '</div>';
+  if (v.confirmedBy && v.status !== 'draft') h += '<div class="sub">确认分录：' + esc(v.confirmedBy) + ' · ' + esc(fmtDateTime(v.confirmedAt)) + '</div>';
+  if (v.status === 'posted' && v.u8) h += '<div class="sub">已传入 U8：' + esc(v.u8.display) + '（' + esc(v.u8.period || '') + '，状态 ' + esc(v.u8.status || '') + '）· ' + esc(v.postedBy || '') + ' ' + esc(fmtDateTime(v.postedAt)) + '</div>';
+  if (v.log && v.log.length) h += '<details class="vlog"><summary class="sub">修改记录 ' + v.log.length + ' 条</summary><ol class="loglist">' + v.log.slice().reverse().map(function(l){ return '<li><span class="mono muted">' + esc(fmtDateTime(l.at)) + '</span> <b>' + esc(l.who || '') + '</b> ' + esc(l.text) + '</li>'; }).join('') + '</ol></details>';
   if (v.lastError) h += '<div class="errbox">' + esc(v.lastError) + '</div>';
   h += '<div class="actions">';
   if (editable){
@@ -1492,7 +1738,7 @@ function showVoucher(v){
     '<div class="tbl-wrap"><table class="tbl" style="min-width:760px"><thead><tr><th>摘要</th><th>科目名称</th><th>辅助项</th><th class="num">借方金额</th><th class="num">贷方金额</th></tr></thead><tbody>' +
     v.lines.map(function(l){ return '<tr style="cursor:default"><td>' + esc(l.summary) + '</td><td><span class="mono">' + esc(l.code) + '</span> ' + esc(fullName(l.code)) + '</td><td>' + esc([l.dept, l.person && empById(l.person) ? empById(l.person).name : ''].filter(Boolean).join(' / ')) + '</td><td class="num mono">' + (l.dc === 'D' ? fmtN(num(l.amount)) : '') + '</td><td class="num mono">' + (l.dc === 'C' ? fmtN(num(l.amount)) : '') + '</td></tr>'; }).join('') +
     '<tr style="cursor:default"><td colspan="3"><b>合计：' + rmbUpper(r2(d)) + '</b></td><td class="num mono"><b>' + fmtN(r2(d)) + '</b></td><td class="num mono"><b>' + fmtN(r2(c)) + '</b></td></tr></tbody></table></div>' +
-    '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:13px" class="muted"><span>制单：' + esc((vUi.u8 && vUi.u8.operator) || '') + '</span><span>U8 状态：' + esc(v.u8 && v.u8.status || '') + '（需在 U8 里审核、记账）</span><span>传入时间：' + esc(fmtDateTime(v.postedAt)) + '</span></div>' +
+    '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:13px" class="muted"><span>制单：' + esc((vUi.u8 && vUi.u8.operator) || '') + '</span><span>分录确认：' + esc(v.confirmedBy || '') + '</span><span>U8 状态：' + esc(v.u8 && v.u8.status || '') + '（需在 U8 里审核、记账）</span><span>传入时间：' + esc(fmtDateTime(v.postedAt)) + '</span></div>' +
     '<div class="actions"><button class="btn lg grow" type="button" data-act="vv-close">关闭</button></div></div>';
   document.body.appendChild(bg);
 }
@@ -1522,7 +1768,7 @@ function openLearn(v, cands){
   vUi.learn = {key:v.key, cands:cands};
 }
 function doConfirm(v){
-  v.status = 'confirmed'; v.confirmedAt = new Date().toISOString(); v.stale = false;
+  v.status = 'confirmed'; v.confirmedAt = new Date().toISOString(); v.confirmedBy = who(); v.stale = false;
   if (vouchers.indexOf(v) < 0) vouchers.push(v);
   vlog(v, '确认分录');
   save(); render(); toast('已确认「' + v.personLabel + '」的分录，可以生成凭证了');
@@ -1538,10 +1784,10 @@ function postVoucher(v){
   return window.api.u8Post(payload(v)).then(function(r){
     delete vUi.posting[v.key];
     if (r && r.ok){
-      v.status = 'posted'; v.u8 = r.data; v.postedAt = new Date().toISOString(); vlog(v, '生成凭证 ' + r.data.display);
+      v.status = 'posted'; v.u8 = r.data; v.postedAt = new Date().toISOString(); v.postedBy = who(); vlog(v, '生成凭证 ' + r.data.display);
       v.invIds.forEach(function(id){ var i = findInv(id); if (i) i.voucher = {key:v.key, display:r.data.display}; });
       toast('已生成凭证 ' + r.data.display);
-    } else { v.lastError = '生成失败：' + ((r && r.message) || '未知错误'); }
+    } else { v.lastError = '生成失败：' + ((r && r.message) || '未知错误'); audLog('生成凭证失败', {type:'voucher', id:v.id, label:'凭证 ' + (v.personLabel || '') + ' ' + (v.day || '')}, v.lastError); }
     save(); render();
   });
 }
@@ -1560,7 +1806,7 @@ function voucherAction(act, t){
   var key = t.getAttribute('data-v'), v = key ? findDraft(key) : null;
   if (act === 'vl-add' && v){ storeDraft(v).lines.push({dc:'D', code:'', summary:'', amount:null, dept:v.dept || '', person:'', kind:'manual', rule:'手动添加'}); vlog(v, '加一行'); save(); render(); return; }
   if (act === 'vl-del' && v){ var i = Number(t.getAttribute('data-i')); storeDraft(v); vlog(v, '删除第 ' + (i + 1) + ' 行：' + v.lines[i].code + ' ' + v.lines[i].amount); v.lines.splice(i, 1); save(); render(); return; }
-  if (act === 'v-reset' && v){ vouchers = vouchers.filter(function(x){ return x !== v; }); save(); render(); toast('已按规则重新生成'); return; }
+  if (act === 'v-reset' && v){ vlog(v, '放弃手动修改，按规则重新生成'); vouchers = vouchers.filter(function(x){ return x !== v; }); save(); render(); toast('已按规则重新生成'); return; }
   if (act === 'v-confirm' && v){
     if (validateV(v).errs.length) return;
     var cands = learnCandidates(v);
@@ -1573,6 +1819,7 @@ function voucherAction(act, t){
     L.cands.forEach(function(c, n){
       var how = ($('#lm-' + n) || {}).value;
       if (!how) return;
+      cfgLog('确认凭证时存成分录规则：' + (how === 'seller' ? '销售方「' + c.inv.f.seller + '」' : how === 'dept' ? '「' + c.dept + '」的「' + c.inv.f.cat + '」' : '所有「' + c.inv.f.cat + '」') + ' → ' + c.to);
       var r = {id:'r' + uid(), code:c.to};
       if (how === 'seller') r.seller = c.inv.f.seller;
       if (how === 'dept'){ r.dept = c.dept; r.cat = c.inv.f.cat; }
@@ -1609,17 +1856,17 @@ function voucherAction(act, t){
     if (!r.seller && !r.dept && !r.cat){ toast('至少填一个条件：销售方、部门或类别'); return; }
     if (!accByCode(code) || !isLeaf(code)){ toast('请选择科目表里的末级科目'); return; }
     ['seller','dept','cat'].forEach(function(k){ if (!r[k]) delete r[k]; });
-    A.rules.push(r); save(); render(); toast('已添加规则'); return;
+    A.rules.push(r); cfgLog('添加分录规则：' + ruleText(r) + ' → ' + r.code); save(); render(); toast('已添加规则'); return;
   }
-  if (act === 'ar-del'){ A.rules = A.rules.filter(function(x){ return x.id !== t.getAttribute('data-id'); }); save(); render(); return; }
+  if (act === 'ar-del'){ var rd = A.rules.filter(function(x){ return x.id === t.getAttribute('data-id'); })[0]; if (rd) cfgLog('删除分录规则：' + ruleText(rd) + ' → ' + rd.code); A.rules = A.rules.filter(function(x){ return x.id !== t.getAttribute('data-id'); }); save(); render(); return; }
   if (act === 'ac-add'){
     var c2 = $('#ac-code').value.trim(), n2 = $('#ac-name').value.trim();
     if (!/^\d{4,}$/.test(c2) || !n2){ toast('请填写科目编码（数字）和名称'); return; }
     if (accByCode(c2)){ toast('科目 ' + c2 + ' 已经有了'); return; }
-    A.accounts.push({code:c2, name:n2, aux:$('#ac-aux').value}); save(); render(); toast('已添加科目 ' + c2 + ' ' + n2); return;
+    A.accounts.push({code:c2, name:n2, aux:$('#ac-aux').value}); cfgLog('添加科目 ' + c2 + ' ' + n2); save(); render(); toast('已添加科目 ' + c2 + ' ' + n2); return;
   }
-  if (act === 'ac-del'){ var dc = t.getAttribute('data-code'); A.accounts = A.accounts.filter(function(a){ return a.code !== dc; }); save(); render(); return; }
-  if (act === 'ac-reset'){ cfg.acct = defaultAcct(); save(); render(); toast('已恢复演示科目和规则'); return; }
+  if (act === 'ac-del'){ var dc = t.getAttribute('data-code'); cfgLog('删除科目 ' + dc + ' ' + fullName(dc)); A.accounts = A.accounts.filter(function(a){ return a.code !== dc; }); save(); render(); return; }
+  if (act === 'ac-reset'){ cfg.acct = defaultAcct(); cfgLog('恢复演示科目和规则'); save(); render(); toast('已恢复演示科目和规则'); return; }
   if (act === 'ac-import'){ $('#acctFile').click(); return; }
 }
 function voucherChange(t){
@@ -1635,8 +1882,8 @@ function voucherChange(t){
     save(); render(); return true;
   }
   if (t.classList.contains('vdate')){ var vd = findDraft(t.getAttribute('data-v')); if (vd && vd.status === 'draft'){ storeDraft(vd).date = t.value; vlog(vd, '凭证日期改为 ' + t.value); save(); } return true; }
-  if (t.classList.contains('acx')){ var a = accByCode(t.getAttribute('data-code')); if (a){ a.aux = t.value; save(); render(); } return true; }
-  if (t.classList.contains('acs')){ acct()[t.getAttribute('data-k')] = t.type === 'checkbox' ? t.checked : t.value.trim(); save(); render(); return true; }
+  if (t.classList.contains('acx')){ var a = accByCode(t.getAttribute('data-code')); if (a){ cfgLog('科目 ' + a.code + ' 辅助核算：' + ({dept:'部门', person:'个人'}[t.value] || '无')); a.aux = t.value; save(); render(); } return true; }
+  if (t.classList.contains('acs')){ cfgLog(({creditCode:'贷方科目', taxCode:'进项税科目', dedSpecial:'专票税额单独记进项', dedTravel:'旅客运输票据记进项'})[t.getAttribute('data-k')] + '：' + (t.type === 'checkbox' ? (t.checked ? '开' : '关') : t.value.trim())); acct()[t.getAttribute('data-k')] = t.type === 'checkbox' ? t.checked : t.value.trim(); save(); render(); return true; }
   if (t.id === 'u8-mode'){ var form = u8Form(); window.api.u8Save(form).then(function(r){ if (r && r.ok) vUi.u8 = r.data; vUi.u8Status = null; render(); }); return true; }
   if (t.id === 'acctFile'){
     var file = t.files && t.files[0]; t.value = '';
@@ -1654,7 +1901,7 @@ function voucherChange(t){
         list.push({code:c, name:n, aux: /部门/.test(ax) ? 'dept' : /个人|职员|人员/.test(ax) ? 'person' : ''});
       });
       if (!list.length){ toast('表里没有读到科目'); return; }
-      acct().accounts = list; vUi.acctMsg = '已导入 ' + list.length + ' 个科目。请检查分录规则里的科目编码是否还存在。'; save(); render();
+      cfgLog('从 Excel 导入科目表，' + list.length + ' 个科目'); acct().accounts = list; vUi.acctMsg = '已导入 ' + list.length + ' 个科目。请检查分录规则里的科目编码是否还存在。'; save(); render();
     });
     return true;
   }
@@ -1662,6 +1909,7 @@ function voucherChange(t){
 }
 
 /* ---------- 事件 ---------- */
+function ruleName(id){ return (RULES.filter(function(r){ return r.id === id; })[0] || {}).name || id; }
 function findInv(id){ return invoices.filter(function(i){ return i.id === id; })[0]; }
 document.addEventListener('click', function(e){
   var t = e.target.closest('[data-act],[data-filter],[data-dec],[data-open],[data-rate],[data-sender]');
@@ -1674,12 +1922,16 @@ document.addEventListener('click', function(e){
   }
   if (t.hasAttribute('data-open')){ if (e.target.closest('a,button')) return; location.hash = 'review-' + t.getAttribute('data-open'); return; }
   if (t.hasAttribute('data-filter')){ ui.filter = t.getAttribute('data-filter'); render(); return; }
-  if (t.hasAttribute('data-rate')){ var r = Number(t.getAttribute('data-rate')), i = cfg.rates.indexOf(r); if (i >= 0) cfg.rates.splice(i,1); else cfg.rates.push(r); cfg.rates.sort(function(a,b){ return a-b; }); save(); render(); return; }
+  if (t.hasAttribute('data-rate')){ var r = Number(t.getAttribute('data-rate')), i = cfg.rates.indexOf(r); if (i >= 0) cfg.rates.splice(i,1); else cfg.rates.push(r); cfg.rates.sort(function(a,b){ return a-b; }); cfgLog((i >= 0 ? '去掉' : '加上') + '允许税率 ' + r + '%'); save(); render(); return; }
   if (t.hasAttribute('data-dec')){
     var inv = findInv(t.getAttribute('data-id')); if (!inv) return;
     var d = t.getAttribute('data-dec'), memo = $('#memo'); if (memo) inv.memo = memo.value;
     if (d && d !== 'approved' && !inv.memo.trim()){ toast('请先在复核意见里写明原因，方便报销人修改'); if (memo) memo.focus(); return; }
-    inv.decision = d || null; save();
+    var oldD = inv.decision;
+    inv.decision = d || null;
+    if (d){ inv.decidedBy = who(); inv.decidedAt = new Date().toISOString(); } else { inv.decidedBy = ''; inv.decidedAt = ''; }
+    audLog(d ? DEC[d] : '撤销处理结果', invT(inv), d ? (inv.memo ? '复核意见：' + inv.memo : '') : '原来是「' + (DEC[oldD] || '') + '」');
+    save();
     if (!d){ render(); toast('已撤销处理结果'); return; }
     toast(DEC[d]);
     var A = auditAll(), q = reviewQueue(A);
@@ -1697,6 +1949,29 @@ document.addEventListener('click', function(e){
   else if (act === 'ex-cancel') closeExport();
   else if (act === 'ex-go') doExport();
   else if (act === 'open-dir') window.api.openDataDir();
+  else if (act === 'arch-dir') window.api.archiveOpenDir();
+  else if (act === 'arch-open'){ var ao = findInv(t.getAttribute('data-id')); if (ao && ao.archive) window.api.archiveOpen(ao.archive.path).then(function(r){ if (!r || !r.ok) toast((r && r.message) || '打不开原件'); else audLog('查看原件', invT(ao), ao.archive.path); }); }
+  else if (act === 'arch-verify'){
+    var av = findInv(t.getAttribute('data-id')); if (!av || !av.archive) return;
+    window.api.archiveVerify(av.archive.path, av.archive.sha256).then(function(r){
+      var res = r && r.ok ? r.data : {ok:false, msg:(r && r.message) || '校验失败'};
+      audLog('校验原件', invT(av), res.msg); toast(res.msg);
+    });
+  }
+  else if (act === 'op-edit') openOperator();
+  else if (act === 'op-cancel'){ var om = $('#op-modal'); if (om) om.remove(); }
+  else if (act === 'op-ok'){
+    var nn = ($('#op-name') || {}).value; nn = String(nn || '').trim().slice(0, 30);
+    var om2 = $('#op-modal'); if (om2) om2.remove();
+    if (!nn || nn === cfg.operator) return;
+    var oldOp = who(); cfg.operator = nn;
+    cfg.operators = [nn].concat((cfg.operators || []).filter(function(x){ return x !== nn; })).slice(0, 10);
+    audLog('切换操作人', {type:'ledger', id:'operator', label:'操作人'}, oldOp + ' → ' + nn);
+    save(); render(); toast('当前操作人：' + nn);
+  }
+  else if (act === 'log-verify'){ window.api.logVerify().then(function(r){ logUi.verify = r && r.ok ? r.data : {ok:false, msg:(r && r.message) || '校验失败'}; render(); }); }
+  else if (act === 'log-export') exportLog();
+  else if (act === 'log-for'){ var lf = findInv(t.getAttribute('data-id')); logUi = {who:'', type:'invoice', from:'', to:'', q: lf && lf.f.no ? lf.f.no : '', verify:null}; }
   else if (act === 'upd-install'){ window.api.installUpdate(); toast('正在重启并更新…'); }
   else if (act === 'upd-open'){ if (upd && upd.url) window.api.openUpdate(upd.url); }
   else if (act === 'upd-check'){ t.disabled = true; window.api.checkUpdate().then(function(r){ t.disabled = false; toast(r && r.ok ? (r.data.msg || '发现新版本，见页面顶部提示') : '检查更新失败，请检查网络'); }); }
@@ -1708,21 +1983,38 @@ document.addEventListener('click', function(e){
     }, function(e){ aiTest = {ok:false, msg:'连接失败：' + (e && e.message || '未知错误')}; }).then(function(){ ui.aiTesting = false; render(); });
   }
   else if (act === 'ai-clear'){ window.api.saveAI({provider:(aiInfo || {}).provider, model:(aiInfo || {}).model, baseUrl:(aiInfo || {}).baseUrl, clearKey:true}).then(function(r){ if (r && r.ok){ aiInfo = r.data; aiState = 'nokey'; aiTest = null; render(); toast('已删除 API Key'); } }); }
-  else if (act === 'manual'){ var n = {id:uid(), createdAt:Date.now(), source:'manual', file:'', status:'ready', conf:null, aiNotes:'', decision:null, memo:'', f:emptyFields()}; n.f.buyer = cfg.companies[0] ? cfg.companies[0].name : ''; n.f.buyerTax = cfg.companies[0] ? cfg.companies[0].taxId : ''; invoices.unshift(n); save(); location.hash = 'review-' + n.id; }
-  else if (act === 'samples'){ invoices = makeSamples().concat(invoices.filter(function(i){ return i.source !== 'sample'; })); save(); render(); toast('已加载 10 张示例发票'); }
+  else if (act === 'manual'){ var n = {id:uid(), createdAt:Date.now(), source:'manual', file:'', status:'ready', conf:null, aiNotes:'', decision:null, memo:'', f:emptyFields()}; n.f.buyer = cfg.companies[0] ? cfg.companies[0].name : ''; n.f.buyerTax = cfg.companies[0] ? cfg.companies[0].taxId : ''; invoices.unshift(n); audLog('手动录入', invT(n), '新建一张手动录入的发票'); save(); location.hash = 'review-' + n.id; }
+  else if (act === 'samples'){ var smp = makeSamples(); invoices = smp.concat(invoices.filter(function(i){ return i.source !== 'sample'; })); audLog('加载示例发票', {type:'ledger', id:'ledger', label:'发票台账'}, smp.length + ' 张'); save(); render(); toast('已加载 ' + smp.length + ' 张示例发票'); }
   else if (act === 'clear'){ ui.confirmClear = true; render(); }
   else if (act === 'clear-no'){ ui.confirmClear = false; render(); }
-  else if (act === 'clear-yes'){ invoices = invoices.filter(function(i){ return i.status === 'recognizing'; }); ui.confirmClear = false; save(); render(); toast('台账已清空'); }
+  else if (act === 'clear-yes'){ audLog('清空台账', {type:'ledger', id:'ledger', label:'发票台账'}, '清空 ' + invoices.filter(function(i){ return i.status !== 'recognizing'; }).length + ' 张发票；原件存档保留'); invoices = invoices.filter(function(i){ return i.status === 'recognizing'; }); ui.confirmClear = false; save(); render(); toast('台账已清空'); }
   else if (act === 'del'){ ui.confirmDel = true; render(); }
   else if (act === 'del-no'){ ui.confirmDel = false; render(); }
-  else if (act === 'del-yes'){ var id = t.getAttribute('data-id'); invoices = invoices.filter(function(i){ return i.id !== id; }); queue = queue.filter(function(i){ return i.id !== id; }); ui.confirmDel = false; save(); location.hash = 'ledger'; toast('已删除'); }
+  else if (act === 'del-yes'){ var id = t.getAttribute('data-id'), dv = findInv(id); if (dv) audLog('删除发票', invT(dv), '价税合计 ' + fmt(num(dv.f.total)) + (dv.archive ? '；原件存档保留：' + dv.archive.path : '')); invoices = invoices.filter(function(i){ return i.id !== id; }); queue = queue.filter(function(i){ return i.id !== id; }); ui.confirmDel = false; save(); location.hash = 'ledger'; toast('已删除'); }
   else if (act === 'retry' || act === 'retry-ai'){
     var iv = findInv(t.getAttribute('data-id'));
-    if (iv && fileMap[iv.id]){ iv.status = 'recognizing'; iv.stage = '排队中'; queue.push({inv:iv, opts: act === 'retry-ai' ? {forceImage:true} : {}}); render(); pump(); }
+    if (iv) getFile(iv).then(function(fl){
+      if (!fl){ toast('没有原始文件，不能重新识别'); return; }
+      audLog(act === 'retry-ai' ? '用 AI 重新识别' : '重新识别', invT(iv), '');
+      iv.status = 'recognizing'; iv.stage = '排队中'; queue.push({inv:iv, opts: act === 'retry-ai' ? {forceImage:true} : {}}); render(); pump();
+    }, function(e){ toast(e.message); });
   }
-  else if (act === 'co-add'){ cfg.companies.push({name:'', taxId:''}); save(); render(); var ins = $$('[data-co][data-key="name"]'); if (ins.length) ins[ins.length-1].focus(); }
-  else if (act === 'co-del'){ cfg.companies.splice(Number(t.getAttribute('data-i')), 1); save(); render(); }
-  else if (act === 'reset-cfg'){ var keep = {employees:cfg.employees, acct:cfg.acct, recentSenders:cfg.recentSenders}; cfg = Object.assign(defaultCfg(), keep); save(); render(); toast('已恢复默认审核规则'); }
+  else if (act === 'sg-add'){
+    var gn = ($('#sg-new') || {}).value; gn = String(gn || '').trim();
+    if (!gn){ toast('请填写职级名称'); return; }
+    if (std().grades.indexOf(gn) >= 0){ toast('已经有「' + gn + '」了'); return; }
+    std().grades.push(gn); std().hotel[gn] = std().tiers.map(function(){ return null; }); std().meal[gn] = null;
+    cfgLog('添加职级：' + gn); save(); render(); toast('已添加职级「' + gn + '」，请填写标准');
+  }
+  else if (act === 'sg-del'){
+    var gd = t.getAttribute('data-g'), used = emps().filter(function(e){ return e.grade === gd; }).length;
+    if (used){ toast('还有 ' + used + ' 个员工是「' + gd + '」，先到员工页改掉再删'); return; }
+    std().grades = std().grades.filter(function(x){ return x !== gd; }); delete std().hotel[gd]; delete std().meal[gd];
+    cfgLog('删除职级：' + gd); save(); render();
+  }
+  else if (act === 'co-add'){ cfg.companies.push({name:'', taxId:''}); cfgLog('添加公司抬头'); save(); render(); var ins = $$('[data-co][data-key="name"]'); if (ins.length) ins[ins.length-1].focus(); }
+  else if (act === 'co-del'){ var cd = cfg.companies.splice(Number(t.getAttribute('data-i')), 1)[0]; cfgLog('删除公司抬头：' + (cd ? cd.name + ' ' + cd.taxId : '')); save(); render(); }
+  else if (act === 'reset-cfg'){ var keep = {employees:cfg.employees, acct:cfg.acct, recentSenders:cfg.recentSenders}; cfg = Object.assign(defaultCfg(), keep, {operator:cfg.operator}); cfgLog('恢复默认审核规则（含职级城市标准）'); save(); render(); toast('已恢复默认审核规则'); }
 });
 document.addEventListener('keydown', function(e){
   var tr = e.target.closest && e.target.closest('tr[data-open]');
@@ -1731,6 +2023,7 @@ document.addEventListener('keydown', function(e){
 document.addEventListener('input', function(e){
   if (e.target.id === 'mail-senders'){ mailUi.senders = e.target.value; return; }
   if (e.target.id === 'hist-who'){ histUi.who = e.target.value; histRefresh(); return; }
+  if (e.target.id === 'log-q'){ logUi.q = e.target.value; logRefresh(); return; }
   if (e.target.id === 'q'){ ui.q = e.target.value; var pos = e.target.selectionStart; render(); var q = $('#q'); if (q){ q.focus(); try{ q.setSelectionRange(pos,pos); }catch(_){} } }
 });
 document.addEventListener('change', function(e){
@@ -1742,7 +2035,9 @@ document.addEventListener('change', function(e){
     else if (k === 'rate') v = parseRate(v);
     else if (k === 'date') v = normDate(v) || v;
     else if (k === 'buyerTax' || k === 'sellerTax') v = normTax(v);
+    var oldV = inv.f[k];
     inv.f[k] = v;
+    if (String(fv(oldV)) !== String(fv(v))) audLog('修改字段', invT(inv), ((FIELDS.filter(function(d){ return d.k === k; })[0] || {}).label || k) + '：' + fv(oldV) + ' → ' + fv(v));
     if (inv.status === 'error'){ inv.status = 'ready'; inv.err = ''; }
     if (inv.conf != null) inv.conf = Math.max(inv.conf, 0.8);
     save(); refreshReview(inv);
@@ -1750,12 +2045,16 @@ document.addEventListener('change', function(e){
   }
   if (voucherChange(t)) return;
   if (t.id === 'person-filter'){ ui.person = t.value; render(); return; }
-  if (t.id === 'rv-emp'){ var ri = findInv(t.getAttribute('data-id')); if (ri){ ri.employeeId = t.value || null; save(); render(); toast(t.value ? '报销人已改为「' + empById(t.value).name + '」' : '已取消指定报销人'); } return; }
+  if (t.id === 'rv-emp'){ var ri = findInv(t.getAttribute('data-id')); if (ri){ var oldE = employeeOf(ri); ri.employeeId = t.value || null; audLog('指定报销人', invT(ri), (oldE ? oldE.name : '未指定') + ' → ' + (t.value ? empById(t.value).name : '未指定')); save(); render(); toast(t.value ? '报销人已改为「' + empById(t.value).name + '」' : '已取消指定报销人'); } return; }
   if (t.hasAttribute && t.hasAttribute('data-addto')){
     var em = empById(t.value), addr = t.getAttribute('data-addto');
-    if (em && (em.emails || []).indexOf(addr) < 0){ em.emails = (em.emails || []).concat([addr]); save(); render(); toast('已把 ' + addr + ' 登记到「' + em.name + '」'); }
+    if (em && (em.emails || []).indexOf(addr) < 0){ em.emails = (em.emails || []).concat([addr]); audLog('修改员工', {type:'employee', id:em.id, label:'员工 ' + em.name}, '登记邮箱 ' + addr); save(); render(); toast('已把 ' + addr + ' 登记到「' + em.name + '」'); }
     return;
   }
+  if (t.id === 'log-who'){ logUi.who = t.value; logRefresh(); return; }
+  if (t.id === 'log-type'){ logUi.type = t.value; logRefresh(); return; }
+  if (t.id === 'log-from'){ logUi.from = t.value; logRefresh(); return; }
+  if (t.id === 'log-to'){ logUi.to = t.value; logRefresh(); return; }
   if (t.id === 'hist-type'){ histUi.dateType = t.value; histRefresh(); return; }
   if (t.id === 'hist-from'){ histUi.from = t.value; histRefresh(); return; }
   if (t.id === 'hist-to'){ histUi.to = t.value; histRefresh(); return; }
@@ -1770,13 +2069,32 @@ document.addEventListener('change', function(e){
     ui.aiDraft = {provider:v, model:(aiInfo && v === aiInfo.provider) ? aiInfo.model : (P[v] ? P[v].model : ''), baseUrl:(aiInfo && v === aiInfo.provider) ? aiInfo.baseUrl : (P[v] ? P[v].baseUrl : '')};
     render(); return;
   }
+  if (t.hasAttribute('data-trip')){
+    var ti = findInv(ui.curId); if (!ti) return;
+    var tk = t.getAttribute('data-trip'), tv = t.value.trim();
+    if (tk !== 'city'){ tv = num(tv); if (tv != null && !(tv > 0)){ toast('请填大于 0 的数字'); t.value = ''; tv = null; } }
+    ti.trip = ti.trip || {};
+    var oldT = ti.trip[tk];
+    if (fv(oldT) === fv(tv)) return;
+    if (tv === '' || tv == null) delete ti.trip[tk]; else ti.trip[tk] = tv;
+    audLog('填写报销标准信息', invT(ti), ({city:'出差城市', nights:'住宿晚数', persons:'用餐人数'})[tk] + '：' + fv(oldT) + ' → ' + fv(tv));
+    save(); var sd = $('#rv-std'); if (sd) sd.innerHTML = stdCard(ti); refreshReview(ti); return;
+  }
   if (t.id === 'memo'){ var iv = findInv(t.getAttribute('data-id')); if (iv){ iv.memo = t.value; save(); } return; }
-  if (t.hasAttribute('data-co')){ cfg.companies[Number(t.getAttribute('data-co'))][t.getAttribute('data-key')] = t.getAttribute('data-key') === 'taxId' ? normTax(t.value) : t.value.trim(); save(); toast('已保存'); return; }
-  if (t.hasAttribute('data-lim')){ cfg.limits[t.getAttribute('data-lim')].v = num(t.value); save(); toast('已保存'); return; }
-  if (t.hasAttribute('data-limlv')){ cfg.limits[t.getAttribute('data-limlv')].lv = t.value; save(); render(); return; }
-  if (t.hasAttribute('data-num')){ var key = t.getAttribute('data-num'), n = num(t.value); if (key === 'days' && (n == null || n < 1)){ t.value = cfg.days; toast('报销期限至少 1 天'); return; } cfg[key] = n; save(); toast('已保存'); return; }
-  if (t.hasAttribute('data-ron')){ cfg.rules[t.getAttribute('data-ron')].on = t.checked; save(); render(); return; }
-  if (t.hasAttribute('data-rlv')){ cfg.rules[t.getAttribute('data-rlv')].lv = t.value; save(); render(); return; }
+  if (t.hasAttribute('data-co')){ var ck = t.getAttribute('data-key'), co = cfg.companies[Number(t.getAttribute('data-co'))]; cfgLog('公司抬头' + (ck === 'taxId' ? '税号' : '名称') + '：' + fv(co[ck]) + ' → ' + fv(t.value.trim())); cfg.companies[Number(t.getAttribute('data-co'))][t.getAttribute('data-key')] = t.getAttribute('data-key') === 'taxId' ? normTax(t.value) : t.value.trim(); save(); toast('已保存'); return; }
+  if (t.hasAttribute('data-lim')){ cfgLog(t.getAttribute('data-lim') + '单张上限：' + fv(cfg.limits[t.getAttribute('data-lim')].v) + ' → ' + fv(num(t.value))); cfg.limits[t.getAttribute('data-lim')].v = num(t.value); save(); toast('已保存'); return; }
+  if (t.hasAttribute('data-limlv')){ cfgLog(t.getAttribute('data-limlv') + '超出上限时：' + (t.value === 'block' ? '直接拦截' : '转人工复核')); cfg.limits[t.getAttribute('data-limlv')].lv = t.value; save(); render(); return; }
+  if (t.hasAttribute('data-num')){ var key = t.getAttribute('data-num'), n = num(t.value); if (key === 'days' && (n == null || n < 1)){ t.value = cfg.days; toast('报销期限至少 1 天'); return; } cfgLog((key === 'days' ? '报销期限（天）' : '大额提醒（元）') + '：' + fv(cfg[key]) + ' → ' + fv(n)); cfg[key] = n; save(); toast('已保存'); return; }
+  if (t.id === 'std-on'){ std().on = t.checked; cfgLog((t.checked ? '启用' : '关闭') + '职级与城市标准'); save(); render(); return; }
+  if (t.id === 'std-lv'){ std().lv = t.value; cfgLog('超出职级城市标准时：' + (t.value === 'block' ? '直接拦截' : '转人工复核')); save(); render(); return; }
+  if (t.hasAttribute('data-hotel')){
+    var hg = t.getAttribute('data-hotel'), hi = Number(t.getAttribute('data-ti')), hv = num(t.value), H = std().hotel;
+    H[hg] = H[hg] || []; cfgLog(hg + ' · ' + std().tiers[hi].name + ' 住宿标准：' + fv(H[hg][hi]) + ' → ' + fv(hv)); H[hg][hi] = hv; save(); toast('已保存'); return;
+  }
+  if (t.hasAttribute('data-meal')){ var mg = t.getAttribute('data-meal'), mv = num(t.value); cfgLog(mg + ' 餐饮人均标准：' + fv(std().meal[mg]) + ' → ' + fv(mv)); std().meal[mg] = mv; save(); toast('已保存'); return; }
+  if (t.hasAttribute('data-tier')){ var tr = std().tiers[Number(t.getAttribute('data-tier'))]; var nc = t.value.split(/[\s,，、;；]+/).filter(Boolean).join(' '); cfgLog(tr.name + '：' + nc); tr.cities = nc; save(); toast('已保存'); return; }
+  if (t.hasAttribute('data-ron')){ cfgLog((t.checked ? '开启' : '关闭') + '检查项：' + ruleName(t.getAttribute('data-ron'))); cfg.rules[t.getAttribute('data-ron')].on = t.checked; save(); render(); return; }
+  if (t.hasAttribute('data-rlv')){ cfgLog(ruleName(t.getAttribute('data-rlv')) + '处理方式：' + (t.value === 'block' ? '拦截' : '复核')); cfg.rules[t.getAttribute('data-rlv')].lv = t.value; save(); render(); return; }
 });
 window.addEventListener('hashchange', function(){ ui.confirmDel = false; ui.confirmClear = false; ui.aiDraft = null; ui.aiKeyDraft = ''; aiTest = null; render(); window.scrollTo(0,0); });
 $('#fileInput').addEventListener('change', function(e){ enqueue(e.target.files); e.target.value = ''; });
@@ -1832,12 +2150,13 @@ function exportList(list, label){
   var issues = function(i){ return A[i.id].checks.filter(function(c){ return c.k === 'fail' || c.k === 'warn'; }).map(function(c){ return c.title + '：' + c.detail; }).join('；'); };
   var how = function(i){ return i.source === 'sample' ? '示例' : i.source === 'manual' ? '手动录入' : METHOD[i.method] || ''; };
   var dept = function(i){ var e = employeeOf(i); return e ? e.dept || '' : ''; };
-  var H1 = ['报销人','部门','提交邮箱','提交时间','审核结果','处理结果','发票类型','发票代码','发票号码','开票日期','购买方','购买方税号','销售方','销售方税号','金额','税额','价税合计','税率','费用类别','项目','明细行数','审核发现','复核意见','邮件主题','邮件时间','来源文件','识别方式'];
+  var H1 = ['报销人','部门','提交邮箱','提交时间','审核结果','处理结果','发票类型','发票代码','发票号码','开票日期','购买方','购买方税号','销售方','销售方税号','金额','税额','价税合计','税率','费用类别','项目','明细行数','审核发现','复核意见','邮件主题','邮件时间','来源文件','识别方式','处理人','处理时间','原件存档','原件 SHA-256'];
   var S1 = [H1].concat(list.map(function(i){
     var f = i.f;
     return [personLabel(i), dept(i), i.sender || '', fmtDateTime(subDate(i).toISOString()), res(i), dec(i), f.type, f.code || '', f.no || '', f.date || '', f.buyer, f.buyerTax, f.seller, f.sellerTax,
       num(f.amount), num(f.tax), num(f.total), f.rate == null || f.rate === '' ? '' : f.rate + '%', f.cat, f.items, (f.lines || []).length,
-      issues(i), i.memo || '', i.mail ? i.mail.subject : '', i.mail ? fmtDateTime(i.mail.date) : '', i.file || '', how(i)];
+      issues(i), i.memo || '', i.mail ? i.mail.subject : '', i.mail ? fmtDateTime(i.mail.date) : '', i.file || '', how(i),
+      i.decidedBy || '', i.decidedAt ? fmtDateTime(i.decidedAt) : '', i.archive ? i.archive.path : '', i.archive ? i.archive.sha256 : ''];
   }));
   var H2 = ['报销人','部门','提交邮箱','发票号码','开票日期','销售方','销售方税号','行号','项目名称','规格型号','单位','数量','单价','金额','税率','税额','审核结果','来源文件'];
   var S2 = [H2];
@@ -1856,9 +2175,10 @@ function exportList(list, label){
     for (var r = 1; r < rows.length; r++) moneyCols.forEach(function(c){ var cell = ws[XL.utils.encode_cell({r:r, c:c})]; if (cell && cell.t === 'n') cell.z = '#,##0.00'; });
     return ws;
   }
-  XL.utils.book_append_sheet(wb, sheet(S1, [10,10,24,16,8,12,18,14,24,12,26,22,26,22,12,10,12,8,10,26,8,50,24,24,16,24,16], [14,15,16]), '发票汇总');
+  XL.utils.book_append_sheet(wb, sheet(S1, [10,10,24,16,8,12,18,14,24,12,26,22,26,22,12,10,12,8,10,26,8,50,24,24,16,24,16,10,16,44,66], [14,15,16]), '发票汇总');
   XL.utils.book_append_sheet(wb, sheet(S2, [10,10,24,24,12,26,22,6,30,14,8,10,14,12,8,10,8,24], [13,15]), '发票明细');
   var data = XL.write(wb, {type:'array', bookType:'xlsx'});
+  audLog('导出台账', {type:'ledger', id:'ledger', label:'发票台账'}, label + '，' + list.length + ' 张发票');
   var d = new Date();
   var name = '发票台账_' + String(label).replace(/[\\/:*?"<>|]/g, '_') + '_' + d.getFullYear() + ('0'+(d.getMonth()+1)).slice(-2) + ('0'+d.getDate()).slice(-2) + '.xlsx';
   window.api.saveFile(name, new Uint8Array(data)).then(function(r){
@@ -1868,7 +2188,7 @@ function exportList(list, label){
 }
 $('#uploadBtn').addEventListener('click', function(){ $('#fileInput').click(); });
 $('#exportBtn').addEventListener('click', openExport);
-document.addEventListener('keydown', function(e){ if (e.key === 'Escape'){ closeExport(); ['#v-viewer', '#learn-modal'].forEach(function(q){ var m = $(q); if (m) m.remove(); }); vUi.learn = null; } });
+document.addEventListener('keydown', function(e){ if (e.key === 'Enter' && e.target && e.target.id === 'op-name'){ var ok = $('[data-act="op-ok"]'); if (ok) ok.click(); return; } if (e.key === 'Escape'){ closeExport(); ['#v-viewer', '#learn-modal', '#op-modal'].forEach(function(q){ var m = $(q); if (m) m.remove(); }); vUi.learn = null; } });
 
 /* ---------- 自动更新 ---------- */
 var appVer = '', isPortable = false, upd = null;
@@ -1888,7 +2208,8 @@ if (window.api.onUpdate) window.api.onUpdate(function(d){ upd = d; renderUpdate(
 /* ---------- 启动 ---------- */
 Promise.all([
   window.api.loadData().then(function(r){ return r && r.ok ? applyLoaded(r.data) : false; }),
-  window.api.info().then(function(r){ if (r && r.ok) dataDir = r.data.dataDir; }),
+  window.api.info().then(function(r){ if (r && r.ok){ dataDir = r.data.dataDir; osUser = r.data.osUser || ''; } }),
+  window.api.logList().then(function(r){ if (r && r.ok) logs = r.data || []; }),
   window.api.getUpdate().then(function(r){ if (r && r.ok){ appVer = r.data.version; isPortable = r.data.portable; if (r.data.update){ upd = r.data.update; renderUpdate(); } } }),
   initAI(),
   loadMailInfo(),

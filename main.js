@@ -348,7 +348,18 @@ ipcMain.handle('u8:post', wrap(async (v) => u8.post(u8Cfg(), v, dataDir(), net))
 ipcMain.handle('u8:demoList', wrap(async () => u8.demoList(dataDir())));
 
 ipcMain.handle('app:openDataDir', wrap(async () => { await shell.openPath(dataDir()); return true; }));
-ipcMain.handle('app:info', wrap(async () => ({ dataDir: dataDir(), version: app.getVersion() })));
+ipcMain.handle('app:info', wrap(async () => { let osUser = ''; try { osUser = require('os').userInfo().username; } catch (e) { /* 取不到就留空 */ } return { dataDir: dataDir(), version: app.getVersion(), osUser }; }));
+
+/* ---------------- 原件存档与操作记录 ---------------- */
+const archive = require('./archive.js');
+ipcMain.handle('archive:put', wrap(async (x) => archive.put(dataDir(), x || {})));
+ipcMain.handle('archive:read', wrap(async (rel) => new Uint8Array(archive.read(dataDir(), rel))));
+ipcMain.handle('archive:verify', wrap(async ({ rel, sha256 }) => archive.verify(dataDir(), rel, sha256)));
+ipcMain.handle('archive:open', wrap(async (rel) => { const p = archive.fullPath(dataDir(), rel); if (!fs.existsSync(p)) throw Object.assign(new Error('原件存档找不到了'), { code: 'archive_missing' }); const err = await shell.openPath(p); if (err) throw new Error(err); return true; }));
+ipcMain.handle('archive:openDir', wrap(async () => { const p = path.join(dataDir(), 'archive'); fs.mkdirSync(p, { recursive: true }); await shell.openPath(p); return true; }));
+ipcMain.handle('log:append', wrap(async (e) => archive.append(dataDir(), e || {})));
+ipcMain.handle('log:list', wrap(async () => archive.list(dataDir())));
+ipcMain.handle('log:verify', wrap(async () => archive.verifyLog(dataDir())));
 
 /* ---------------- 窗口 ---------------- */
 function createWindow() {

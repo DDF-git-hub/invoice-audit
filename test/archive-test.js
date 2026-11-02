@@ -1,0 +1,36 @@
+// 原件存档和操作记录的单元测试（不需要 Electron）
+'use strict';
+const fs = require('fs'), os = require('os'), path = require('path');
+const A = require('../archive.js');
+let fail = 0;
+const ok = (c, m) => { console.log((c ? '  ✓ ' : '  ✗ ') + m); if (!c) fail++; };
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arch-'));
+console.log('[原件存档]');
+const data = Buffer.from('%PDF-1.4 测试发票');
+const r1 = A.put(dir, { name: '餐费/发票.pdf', data, date: '2026-11-02T08:00:00Z' });
+ok(/^archive\/2026\/11\/[0-9a-f]{12}_餐费_发票\.pdf$/.test(r1.path), '按年月存档，文件名带哈希：' + r1.path);
+ok(r1.sha256 === A.sha256(data), '记录了 SHA-256');
+const r2 = A.put(dir, { name: '另一个名字.pdf', data, date: '2026-12-01' });
+ok(r2.existed && r2.path === r1.path, '同一个文件只存一份');
+ok(A.read(dir, r1.path).equals(data), '能读回原件');
+ok(A.verify(dir, r1.path, r1.sha256).ok, '校验通过');
+const full = A.fullPath(dir, r1.path); fs.chmodSync(full, 0o644); fs.writeFileSync(full, 'changed');
+ok(!A.verify(dir, r1.path, r1.sha256).ok, '原件被改后校验不通过');
+let threw = false; try { A.read(dir, '../ledger.json'); } catch (e) { threw = true; }
+ok(threw, '不能读存档文件夹以外的文件');
+console.log('[操作记录]');
+for (let i = 0; i < 5; i++) A.append(dir, { who: '张会计', act: '人工通过', type: 'invoice', id: 'i' + i, label: '发票 ' + i, detail: '第 ' + i + ' 条' });
+const L = A.list(dir);
+ok(L.length === 5 && L[4].seq === 5 && L[4].prev === L[3].hash, '5 条记录，前后串成链');
+ok(A.verifyLog(dir).ok, '完整性校验通过');
+const f = path.join(dir, 'audit-log.jsonl');
+const lines = fs.readFileSync(f, 'utf8').split('\n');
+fs.writeFileSync(f, lines.join('\n').replace('第 2 条', '第 9 条'));
+const v1 = A.verifyLog(dir); ok(!v1.ok && v1.badAt === 3, '改了第 3 条能发现：' + v1.msg);
+fs.writeFileSync(f, lines.filter((l, i) => i !== 1).join('\n'));
+const v2 = A.verifyLog(dir); ok(!v2.ok, '删了一条能发现：' + v2.msg);
+fs.writeFileSync(f, lines.join('\n')); A._reset(dir);
+A.append(dir, { who: 'x', act: 'y' });
+ok(A.verifyLog(dir).ok && A.list(dir).length === 6, '重启后继续追加，链不断');
+console.log(fail ? '有 ' + fail + ' 项失败' : '全部通过');
+process.exit(fail ? 1 : 0);

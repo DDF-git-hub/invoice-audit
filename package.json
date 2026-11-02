@@ -1,7 +1,7 @@
 {
   "name": "invoice-audit-desk",
   "productName": "发票审核台",
-  "version": "1.7.3",
+  "version": "1.8.0",
   "description": "发票审核台 - 发票自动识别与审核",
   "main": "main.js",
   "author": "财务部",
@@ -10,7 +10,7 @@
     "vendor": "node scripts/copy-vendor.js",
     "start": "npm run vendor && electron .",
     "dist": "npm run vendor && electron-builder --win --x64",
-    "test": "node test/unit.js",
+    "test": "node test/archive-test.js && node test/unit.js",
     "test:e2e": "node test/e2e.js"
   },
   "dependencies": {
@@ -43,6 +43,7 @@
       "main.js",
       "mail.js",
       "u8.js",
+      "archive.js",
       "preload.js",
       "renderer/**/*",
       "!renderer/**/*.map",

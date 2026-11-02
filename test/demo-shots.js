@@ -52,6 +52,7 @@ const shots = [];
       await wait(150);
       return shot(name, targets, Object.assign({}, opt, { center: false, noScroll: true }));
     }
+    if (!opt.keepToast) await page.evaluate(() => { const t = document.querySelector('#toast'); if (t) t.hidden = true; });
     await page.evaluate((bx) => {
       bx.forEach((b) => {
         const d = document.createElement('div');
@@ -165,13 +166,16 @@ const shots = [];
   await shot('16-职级与城市标准设置', [['section[aria-label="职级与城市标准"]', null]], { center: false });
 
   // ---------- 5. 生成凭证到 U8 ----------
-  for (const re of [/办公用品专票/, /餐费发票/]) {
-    await go('ledger');
-    const r = row(re);
-    if (!(await r.count())) { console.log('  ! 台账里没有 ' + re); continue; }
-    await r.click();
+  // 张三邮件导入的发票：需要复核的点「人工通过」（餐费那张截图）
+  await go('ledger');
+  const zIds = await page.evaluate(() => Array.from(document.querySelectorAll('tr[data-open]')).filter((r) => r.children[3] && r.children[3].innerText.trim() === '张三').map((r) => ({ id: r.getAttribute('data-open'), pass: /通过/.test(r.children[0].innerText), meal: /餐饮/.test(r.innerText) })));
+  console.log('  张三的发票：' + JSON.stringify(zIds));
+  zIds.sort((a, b) => (b.meal ? 1 : 0) - (a.meal ? 1 : 0));
+  for (const z of zIds) {
+    if (z.pass) continue;
+    await go('review-' + z.id);
     await page.waitForSelector('[data-dec="approved"]');
-    if (re.source.indexOf('餐费') >= 0) await shot('17-人工通过', [['#memo', 1], ['[data-dec="approved"]', 2]], { center: true });
+    if (z.meal) { await page.fill('#memo', '客户招待 4 人，人均未超标，已核实，同意报销'); await shot('17-人工通过', [['#rv-checks', 1], ['#memo', 2], ['[data-dec="approved"]', 3]], { center: true }); }
     await page.click('[data-dec="approved"]');
     await wait(600);
   }
@@ -209,13 +213,12 @@ const shots = [];
   await wait(400);
   await page.evaluate(() => window.scrollTo(0, 0));
   await shot('22-报销查询', [['#hist-who', 1], ['[data-act="hist-range"][data-r="month"]', 2], ['#hist-results', 3]], { noScroll: true });
-  await go('ledger');
-  await row(/办公用品专票/).click();
+  await go('review-' + (zIds[0] || {}).id);
   await page.waitForSelector('[data-act="arch-verify"]');
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.click('[data-act="arch-verify"]');
   await wait(400);
-  await shot('23-原件存档与校验', [['.arch', 1], ['#toast', 2]], { noScroll: true });
+  await shot('23-原件存档与校验', [['.arch', 1], ['#toast', 2]], { noScroll: true, keepToast: true });
   await shot('24-单张发票处理记录', [['section[aria-label="处理记录"]', null]], { center: true });
   await go('log');
   await page.click('[data-act="log-verify"]');

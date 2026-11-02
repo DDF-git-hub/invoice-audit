@@ -442,6 +442,20 @@ fs.mkdirSync(out, { recursive: true });
       const c3 = await page.evaluate(() => document.querySelector('#rv-checks').innerText);
       chk(/昆山（其他城市）400\.00 元\/晚 × 3 晚/.test(c3) && /超出住宿标准/.test(c3), '没列出的城市按其他城市 400/晚 算');
     }
+    // 复核意见按审核发现自动填写
+    await page.evaluate(() => { location.hash = 'ledger'; });
+    await page.waitForTimeout(300);
+    const did = await page.evaluate(() => { const r = Array.from(document.querySelectorAll('tr[data-open]')).find((x) => /重复报销/.test(x.innerText) && /示例/.test(x.innerText)); return r && r.getAttribute('data-open'); });
+    if (did) {
+      await page.evaluate((id) => { location.hash = 'review-' + id; }, did);
+      await page.waitForSelector('#memo');
+      const mv = await page.inputValue('#memo');
+      chk(/^审核发现：/.test(mv) && /重复报销/.test(mv), '复核意见自动填上审核发现：' + mv.replace(/\n/g, ' / ').slice(0, 50));
+      await page.click('[data-dec="rejected"]');
+      await page.waitForTimeout(800);
+      const saved = JSON.parse(fs.readFileSync(path.join(ud, 'ledger.json'), 'utf8')).invoices.find((i) => i.id === did);
+      chk(saved && saved.decision === 'rejected' && /重复报销/.test(saved.memo) && /处理：驳回/.test(saved.memo), '不用手写也能驳回，意见里带上了审核发现和处理结果');
+    } else chk(false, '示例里没找到重复报销的发票');
     await page.evaluate(() => { location.hash = 'rules'; });
     await page.waitForSelector('section[aria-label="职级与城市标准"]');
     await page.screenshot({ path: path.join(out, '20-规则设置.png'), fullPage: true });

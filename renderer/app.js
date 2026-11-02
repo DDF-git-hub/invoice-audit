@@ -813,7 +813,12 @@ function viewReview(id){
     '<label class="fld" for="rv-emp">报销人<select id="rv-emp" data-id="' + inv.id + '"><option value="">' + (inv.sender ? '未登记（' + esc(inv.sender) + '）' : '未指定') + '</option>' +
       emps().slice().sort(function(a, b){ return byName(a.name, b.name); }).map(function(e){ return '<option value="' + e.id + '"' + (curEmp && curEmp.id === e.id ? ' selected' : '') + '>' + esc(e.name + (e.dept ? '（' + e.dept + '）' : '')) + '</option>'; }).join('') + '</select></label>' +
     (inv.sender && !curEmp ? '<span class="sub">这个邮箱还没登记，可以在上面直接选员工，或者到 <a href="#staff">员工</a> 页把邮箱登记到员工名下。</span>' : '') +
-    '<label class="fld" for="memo">复核意见<textarea id="memo" rows="3" data-id="' + inv.id + '" placeholder="例如：已确认为 8 人客户招待，人均未超标，同意报销">' + esc(inv.memo) + '</textarea></label>' +
+    (function(){
+      var dr = memoDraft(au), auto = !inv.memo && !!dr;
+      return '<label class="fld" for="memo"><span style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">复核意见<span class="sub" id="memo-hint">' + (auto ? '已按审核发现自动填写，可以直接修改' : '') + '</span></span>' +
+        '<textarea id="memo" rows="' + (dr ? 5 : 3) + '" data-id="' + inv.id + '" data-auto="' + (auto ? '1' : '0') + '" placeholder="例如：已确认为 8 人客户招待，人均未超标，同意报销">' + esc(auto ? dr : inv.memo) + '</textarea></label>' +
+        (dr ? '<div class="actions" style="font-size:12px;margin-top:-4px"><button class="linkbtn" type="button" data-act="memo-fill" data-id="' + inv.id + '">按审核发现重新填写</button></div>' : '');
+    })() +
     '<div class="actions"><button class="btn lg danger" type="button" data-dec="rejected" data-id="' + inv.id + '">驳回</button><button class="btn lg" type="button" data-dec="returned" data-id="' + inv.id + '">退回补充说明</button>' +
     '<button class="btn lg primary grow" type="button" data-dec="approved" data-id="' + inv.id + '"' + (inv.status !== 'ready' ? ' disabled' : '') + '>人工通过</button></div>' +
     '<div class="actions" style="font-size:12px">' + (inv.decision ? '<button class="linkbtn muted" type="button" data-dec="" data-id="' + inv.id + '">撤销处理结果</button>' : '') +
@@ -821,6 +826,14 @@ function viewReview(id){
     '</div></section>' + invLogCard(inv) + '</div></div>';
   return h;
 }
+// 复核意见草稿：把拦截、复核的发现列出来，人工再改
+function memoDraft(au){
+  if (!au) return '';
+  var bad = au.checks.filter(function(c){ return c.k === 'fail' || c.k === 'warn'; });
+  if (!bad.length) return '';
+  return '审核发现：\n' + bad.map(function(c, n){ return (bad.length > 1 ? (n + 1) + '. ' : '') + c.title + (c.detail ? '：' + c.detail : ''); }).join('\n');
+}
+var MEMO_END = {approved:'处理：已核实，同意报销。', rejected:'处理：驳回，请重新开具发票或换票后再报销。', returned:'处理：请补充说明后重新提交。'};
 function archiveCard(inv){
   if (inv.source === 'sample') return '<div class="card pad arch"><span class="chip idle">示例</span><span class="sub">示例数据没有原件</span></div>';
   if (inv.source === 'manual') return '<div class="card pad arch"><span class="chip review">无原件</span><span class="sub">手动录入的发票没有电子原件，纸质原件请另行归档</span></div>';
@@ -906,6 +919,8 @@ function refreshReview(inv){
   var c = $('#rv-checks'); if (c) c.innerHTML = checksHtml(inv, au);
   var p = $('#rv-paper'); if (p) p.innerHTML = paper(inv, au);
   var ch = $('#rv-chip'); if (ch) ch.innerHTML = chip(inv, au);
+  var me = $('#memo');
+  if (me && me.getAttribute('data-auto') === '1' && document.activeElement !== me){ me.value = memoDraft(au); var mh = $('#memo-hint'); if (mh) mh.textContent = me.value ? '已按审核发现自动填写，可以直接修改' : ''; }
   var sd = $('#rv-std'); if (sd && !sd.contains(document.activeElement)) sd.innerHTML = stdCard(inv);
   else { var sr = $('#std-res'), sl = stdLimit(inv); if (sr && sl){ sr.className = num(inv.f.total) > sl.limit + 0.001 ? 'status-bad' : 'status-ok'; sr.textContent = sl.text + ' = ' + fmt(sl.limit) + '；发票 ' + fmt(num(inv.f.total)); } }
   var t = $('#rv-title'); if (t) t.textContent = (inv.f.seller || inv.file || '未命名发票') + (num(inv.f.total) != null ? ' · ' + fmt(num(inv.f.total)) : '');
@@ -1927,7 +1942,11 @@ document.addEventListener('click', function(e){
   if (t.hasAttribute('data-rate')){ var r = Number(t.getAttribute('data-rate')), i = cfg.rates.indexOf(r); if (i >= 0) cfg.rates.splice(i,1); else cfg.rates.push(r); cfg.rates.sort(function(a,b){ return a-b; }); cfgLog((i >= 0 ? '去掉' : '加上') + '允许税率 ' + r + '%'); save(); render(); return; }
   if (t.hasAttribute('data-dec')){
     var inv = findInv(t.getAttribute('data-id')); if (!inv) return;
-    var d = t.getAttribute('data-dec'), memo = $('#memo'); if (memo) inv.memo = memo.value;
+    var d = t.getAttribute('data-dec'), memo = $('#memo');
+    if (memo){
+      if (d && memo.getAttribute('data-auto') === '1' && memo.value.trim() && MEMO_END[d]) memo.value = memo.value.replace(/\s+$/, '') + '\n' + MEMO_END[d];
+      if (d) inv.memo = memo.value;
+    }
     if (d && d !== 'approved' && !inv.memo.trim()){ toast('请先在复核意见里写明原因，方便报销人修改'); if (memo) memo.focus(); return; }
     var oldD = inv.decision;
     inv.decision = d || null;
@@ -1961,6 +1980,10 @@ document.addEventListener('click', function(e){
     });
   }
   else if (act === 'op-edit') openOperator();
+  else if (act === 'memo-fill'){
+    var mi = findInv(t.getAttribute('data-id')), mt = $('#memo');
+    if (mi && mt){ mt.value = memoDraft(audit(mi, invoices)); mt.setAttribute('data-auto', '1'); mi.memo = ''; save(); var mh2 = $('#memo-hint'); if (mh2) mh2.textContent = '已按审核发现自动填写，可以直接修改'; mt.focus(); }
+  }
   else if (act === 'op-cancel'){ var om = $('#op-modal'); if (om) om.remove(); }
   else if (act === 'op-ok'){
     var nn = ($('#op-name') || {}).value; nn = String(nn || '').trim().slice(0, 30);
@@ -2025,6 +2048,7 @@ document.addEventListener('keydown', function(e){
 document.addEventListener('input', function(e){
   if (e.target.id === 'mail-senders'){ mailUi.senders = e.target.value; return; }
   if (e.target.id === 'hist-who'){ histUi.who = e.target.value; histRefresh(); return; }
+  if (e.target.id === 'memo'){ e.target.setAttribute('data-auto', '0'); var mh = $('#memo-hint'); if (mh) mh.textContent = ''; return; }
   if (e.target.id === 'log-q'){ logUi.q = e.target.value; logRefresh(); return; }
   if (e.target.id === 'q'){ ui.q = e.target.value; var pos = e.target.selectionStart; render(); var q = $('#q'); if (q){ q.focus(); try{ q.setSelectionRange(pos,pos); }catch(_){} } }
 });

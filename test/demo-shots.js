@@ -9,10 +9,12 @@ const nodemailer = require('nodemailer');
 
 const root = path.join(__dirname, '..');
 const fx = path.join(__dirname, 'fixtures');
-const out = path.join(root, 'test-output', 'demo-shots');
+// DEMO_CLEAN=1：不画红框和标号（放简历、介绍材料用）
+const CLEAN = !!process.env.DEMO_CLEAN;
+const out = path.join(root, 'test-output', CLEAN ? 'demo-shots-clean' : 'demo-shots');
 fs.mkdirSync(out, { recursive: true });
 const SMTP = Number(process.env.MAIL_SMTP_PORT || 3025), IMAP = Number(process.env.MAIL_IMAP_PORT || 3143);
-const TO = 'fapiao@demo.local';
+const TO = CLEAN ? 'fapiao2@demo.local' : 'fapiao@demo.local';
 const shots = [];
 
 (async () => {
@@ -52,6 +54,7 @@ const shots = [];
       await wait(150);
       return shot(name, targets, Object.assign({}, opt, { center: false, noScroll: true }));
     }
+    if (CLEAN) boxes.length = 0;
     if (!opt.keepToast) await page.evaluate(() => { const t = document.querySelector('#toast'); if (t) t.hidden = true; });
     await page.evaluate((bx) => {
       bx.forEach((b) => {

@@ -150,7 +150,7 @@ const shots = [];
   await go('ledger');
   await page.evaluate(() => window.scrollTo(0, 0));
   await shot('10-审核结果总览', [['.tiles', 1], ['section[aria-label="发票台账"] .tbl', 2], ['section:has(h2:text("问题分布"))', 3]], { noScroll: true });
-  await shot('11-拦截和复核排在前面', [[row(/重复报销/), null], [row(/连号拆票/), null]], { center: true });
+  await shot('11-拦截和复核排在前面', [[row(/重复报销/), null], [row(/超出住宿标准/), null]], { center: true });
 
   // ---------- 3. 复核处理 ----------
   await openRow(/重复报销/);

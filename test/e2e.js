@@ -353,6 +353,8 @@ fs.mkdirSync(out, { recursive: true });
       await page.waitForSelector(card + ' [data-act="v-post"]');
       await page.click(card + ' [data-act="v-post"]');
       await page.waitForSelector(card + ' [data-act="v-view"]', { timeout: 10000 });
+      // 界面先更新、数据文件稍后保存：等文件里也变成「已生成」再检查
+      for (let k = 0; k < 40; k++) { const x = ledNow().vouchers.find((v) => v.personLabel === '张三'); if (x && x.status === 'posted') break; await page.waitForTimeout(250); }
       const vp = ledNow().vouchers.find((v) => v.personLabel === '张三');
       chk(vp.status === 'posted' && vp.u8 && /^记-0001$/.test(vp.u8.display), '生成凭证，拿回 U8 凭证号：' + (vp.u8 && vp.u8.display));
       const demo = JSON.parse(fs.readFileSync(path.join(ud, 'u8-demo.json'), 'utf8'));

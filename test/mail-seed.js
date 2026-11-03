@@ -60,7 +60,7 @@ async function seed(smtpPort) {
   const gbkName = Buffer.concat([Buffer.from([0xb7, 0xa2, 0xc6, 0xb1]), Buffer.from('.pdf')]); // “发票.pdf”
   const tinyPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
 
-  await send({ from: ZHANG, subject: '餐费发票', text: '请报销', attachments: [{ filename: '餐费.pdf', content: file('sdp-canyin.pdf') }] });
+  await send({ from: ZHANG, subject: '餐费发票', text: '10月客户招待，共4人，领导已同意，麻烦报销', attachments: [{ filename: '餐费.pdf', content: file('sdp-canyin.pdf') }] });
   await send({ from: ZHANG, subject: '办公用品发票（压缩包）', text: '见附件', attachments: [{ filename: 'fapiao.zip', content: gbkZip([{ nameBytes: gbkName, data: file('sdp-zhuanpiao.pdf') }, { nameBytes: Buffer.from('readme.txt'), data: Buffer.from('hello') }]) }] });
   await send({ from: ZHANG, subject: 'Fw: 您收到一张电子发票', text: '转发', attachments: [{ filename: 'forward.eml', content: inner, contentType: 'message/rfc822' }] });
   await send({ from: ZHANG, subject: '周报', html: '<p>本周工作</p><img src="cid:logo">', attachments: [{ filename: 'logo.png', content: tinyPng, cid: 'logo' }] });

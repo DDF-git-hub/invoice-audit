@@ -304,7 +304,8 @@ ipcMain.handle('mail:scan', wrap(async (opts) => {
   mailCache = { id: String(Date.now()), messages: r.messages };
   return {
     scanId: mailCache.id, senders: r.senders, days: r.days,
-    messages: r.messages.map((m) => ({ uid: m.uid, from: m.from, fromName: m.fromName, subject: m.subject, date: m.date, links: m.links,
+    messages: r.messages.map((m) => ({ uid: m.uid, msgId: m.msgId, from: m.from, fromName: m.fromName, subject: m.subject, date: m.date, links: m.links,
+      text: m.text, refs: m.refs, noteSeen: m.noteSeen,
       files: m.files.map((f) => ({ id: f.id, name: f.name, size: f.size, seen: f.seen })) }))
   };
 }));
@@ -313,11 +314,18 @@ ipcMain.handle('mail:import', wrap(async ({ scanId, ids }) => {
   const want = new Set(ids || []);
   const seen = new Set(readJson(MAIL_SEEN(), []));
   const out = [];
-  mailCache.messages.forEach((m) => m.files.forEach((f) => {
-    if (!want.has(f.id)) return;
-    out.push({ name: f.name, data: f.data, from: m.from, fromName: m.fromName, subject: m.subject, date: m.date, msgId: m.msgId });
-    seen.add(f.key); f.seen = true;
-  }));
+  mailCache.messages.forEach((m) => {
+    m.files.forEach((f) => {
+      if (!want.has(f.id)) return;
+      out.push({ name: f.name, data: f.data, from: m.from, fromName: m.fromName, subject: m.subject, date: m.date, msgId: m.msgId, text: m.text, refs: m.refs });
+      seen.add(f.key); f.seen = true;
+    });
+    // 没有发票的回复邮件：员工的说明，挂到原来的发票上
+    if (want.has('note:' + m.uid)) {
+      out.push({ note: true, from: m.from, fromName: m.fromName, subject: m.subject, date: m.date, msgId: m.msgId, text: m.text, refs: m.refs });
+      seen.add('note|' + m.msgId); m.noteSeen = true;
+    }
+  });
   writeJsonAtomic(MAIL_SEEN(), Array.from(seen).slice(-20000));
   return out;
 }));

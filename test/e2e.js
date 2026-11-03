@@ -171,6 +171,19 @@ fs.mkdirSync(out, { recursive: true });
       check(mine.every((i) => i.mail && i.mail.subject) && mine.some((i) => i.sender === 'zhang.san@test2.local'), '每张都记下了邮件，两个邮箱的都归到张三');
       const nos = mine.map((i) => i.f.no).sort();
       check(JSON.stringify(nos) === JSON.stringify(s.expect.nos.slice().sort()), '识别出的发票号码：' + nos.join('、'));
+      // 邮件正文：员工写的说明跟着发票保存，人数自动读出来
+      const cy = mine.find((i) => i.file === '餐费.pdf');
+      check(!!cy && /领导已同意/.test((cy.mail && cy.mail.text) || ''), '邮件正文跟着发票保存：' + (cy && cy.mail && cy.mail.text));
+      check(!!cy && cy.trip && cy.trip.persons === 4, '从邮件里读出用餐人数：' + (cy && cy.trip && cy.trip.persons));
+      if (cy) {
+        await page.evaluate((id) => { location.hash = 'review-' + id; }, cy.id);
+        await page.waitForSelector('#rv-checks');
+        const ex = await page.evaluate(() => ({ card: (document.querySelector('section[aria-label="员工说明"]') || {}).innerText || '', checks: document.querySelector('#rv-checks').innerText }));
+        check(/领导已同意/.test(ex.card) && /员工在邮件里附了说明/.test(ex.checks), '复核页显示「员工说明」，审核结果提示员工附了说明');
+        await page.screenshot({ path: path.join(out, '07b-员工说明.png'), fullPage: true });
+        await page.evaluate(() => { location.hash = 'ledger'; });
+        await page.waitForTimeout(500);
+      }
       await page.selectOption('#person-filter', 'emp:' + zid).catch(() => {});
       await page.waitForTimeout(400);
       await page.screenshot({ path: path.join(out, '08-按提交人筛选.png'), fullPage: true });
@@ -296,6 +309,9 @@ fs.mkdirSync(out, { recursive: true });
       };
       await approve('餐费.pdf', 'zhangsan@test.local');
       await approve('发票.pdf', 'zhangsan@test.local');
+      await page.waitForTimeout(400);
+      const cym = ledNow().invoices.find((i) => i.file === '餐费.pdf' && i.sender === 'zhangsan@test.local');
+      chk(!!cym && /员工说明/.test(cym.memo || '') && /领导已同意/.test(cym.memo || ''), '人工通过时复核意见带上了员工说明');
       await page.evaluate(() => { location.hash = 'voucher'; });
       await page.waitForSelector('section[aria-label="凭证 张三"]');
       const card = 'section[aria-label="凭证 张三"]';
@@ -503,6 +519,34 @@ fs.mkdirSync(out, { recursive: true });
       chk(/邮件通知报销人/.test(logs), '操作记录里有这次通知');
       const still = await page.evaluate((t) => !!document.querySelector('.notice-bar [data-to="' + t + '"]'), target);
       chk(!still, '通知过以后不再提示');
+      // 员工回复说明（不带发票）→ 挂到原来的发票上
+      const nmid = notified[0] && notified[0].notice && notified[0].notice.messageId;
+      chk(!!nmid, '记下了通知邮件的编号');
+      if (nmid) {
+        const nodemailer = require('nodemailer');
+        const tr2 = nodemailer.createTransport({ host: '127.0.0.1', port: Number(process.env.MAIL_SMTP_PORT || 3025), secure: false, ignoreTLS: true });
+        await tr2.sendMail({ from: { name: '张三', address: target }, to: 'finance@test.local', subject: 'Re: ' + subject, inReplyTo: nmid, references: [nmid],
+          text: '已找王总签字同意，审批截图稍后补上。\n\n------------------ 原始邮件 ------------------\n' + body.slice(0, 200) });
+        tr2.close();
+        await page.evaluate(() => { location.hash = 'mail'; });
+        await page.waitForSelector('[data-act="mail-scan"]');
+        await page.click('[data-act="mail-scan"]');
+        await page.waitForTimeout(500);
+        for (let k = 0; k < 240; k++) { if (await page.evaluate(() => !!document.querySelector('[data-act="mail-scan"]:not([disabled])'))) break; await page.waitForTimeout(500); }
+        const nr = await page.evaluate(() => { const c = document.querySelector('.mail-file[data-fid^="note:"]'); return c ? { checked: c.checked, label: c.closest('label').innerText.replace(/\s+/g, ' ') } : null; });
+        chk(!!nr && nr.checked, '员工的回复邮件列为「回复说明」并默认勾选：' + (nr && nr.label));
+        await page.screenshot({ path: path.join(out, '23-回复说明.png'), fullPage: true });
+        if (nr) {
+          await page.click('[data-act="mail-none"]');
+          await page.check('.mail-file[data-fid^="note:"]');
+          await page.click('[data-act="mail-import"]');
+          await page.waitForTimeout(1500);
+          const led2 = JSON.parse(fs.readFileSync(path.join(ud, 'ledger.json'), 'utf8'));
+          const withNote = led2.invoices.filter((i) => (i.notes || []).some((n) => /王总签字同意/.test(n.text) && !/原始邮件|您好/.test(n.text)));
+          chk(withNote.length === notified.length, '回复说明挂到了通知过的 ' + withNote.length + ' 张发票上，引用的旧邮件已去掉');
+          chk(withNote.every((i) => !i.decision || i.decision !== 'approved'), '有说明也不会自动通过，仍需财务判断');
+        }
+      }
     }
   }
 

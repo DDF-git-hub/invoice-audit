@@ -259,6 +259,8 @@ function audit(inv, all){
   if (f.sellerTax && !TAX_RE.test(normTax(f.sellerTax))) add('sellerTax', true, '销售方税号格式异常', f.sellerTax, ['sellerTax']);
 
   if (inv.qr && inv.qr.mismatch && inv.qr.mismatch.length) add('unclear', true, '与二维码不一致', inv.qr.mismatch.join('、') + '的识别结果和发票二维码不同，已按二维码修正，请核对', []);
+  var ex = explainOf(inv);
+  if (ex) checks.push({id:'explain', k:'info', title: ex.reply ? '员工回复了说明' : '员工在邮件里附了说明', detail: '「' + ex.text.replace(/\s+/g, ' ').slice(0, 60) + (ex.text.length > 60 ? '…' : '') + '」，复核时请看「员工说明」，必要时要求附审批凭证', fields:[]});
   checks.push({id:'verify', k:'skip', title:'真伪查验', detail:'演示版未接入查验接口', fields:[]});
   var order = {fail:0, warn:1, info:2, ok:3, skip:4};
   checks.sort(function(x,y){ return order[x.k] - order[y.k]; });
@@ -615,6 +617,7 @@ function pump(){
   busy = true; inv.status = 'recognizing'; render();
   var file = fileMap[inv.id];
   archiveFile(inv, file).then(function(){ return recognize(inv, file, job.opts); }).then(function(){
+    applyMailHints(inv);
     audLog('识别完成', invT(inv), (METHOD[inv.method] || '') + (inv.conf != null ? '，置信度 ' + Math.round(inv.conf * 100) + '%' : '') + '，价税合计 ' + fmt(num(inv.f.total)), true);
   }, function(e){ throw e; }).catch(function(e){
     inv.status = 'error'; inv.err = aiErr(e); inv.errCode = (e && e.code) || ''; inv.stage = '';
@@ -737,7 +740,7 @@ function viewLedger(){
       var au = A[i.id], issue;
       if (i.status === 'recognizing') issue = '<span class="muted">' + esc(i.file) + (i.stage ? ' · ' + esc(i.stage) : '') + '</span>';
       else if (i.status === 'error') issue = (i.errCode === 'no_ai' ? '未设置 AI 识别，点开对照原件补录，或设置 AI 后重新识别' : esc(i.err)) + ' <span class="muted">· ' + esc(i.file) + '</span>';
-      else { var bad = au.checks.filter(function(c){ return c.k === 'fail' || c.k === 'warn'; }); issue = bad.length ? esc(bad.map(function(c){ return c.title; }).join('；')) : '<span class="muted">—</span>'; }
+      else { var bad = au.checks.filter(function(c){ return c.k === 'fail' || c.k === 'warn'; }); issue = bad.length ? esc(bad.map(function(c){ return c.title; }).join('；')) : '<span class="muted">—</span>'; if (explainOf(i)) issue += ' <span class="chip idle">' + (explainOf(i).reply ? '员工已回复' : '附说明') + '</span>'; }
       h += '<tr data-open="' + i.id + '" tabindex="0" aria-label="查看 ' + esc(i.f.seller || i.file) + '">' +
         '<td>' + chip(i, au) + (i.decision ? '<span class="decision">' + DEC[i.decision] + '</span>' : '') + (i.notice ? '<span class="decision">已邮件通知</span>' : '') + '</td>' +
         '<td class="mono nowrap" style="font-size:12px">' + esc(i.f.no || '—') + (i.source === 'sample' ? ' <span class="chip sample">示例</span>' : '') + '</td>' +
@@ -803,6 +806,7 @@ function viewReview(id){
   h += '<div class="rv-right">';
   if (inv.status === 'error') h += '<div class="errbox" role="alert">' + esc(inv.err) + '</div>';
   if (inv.status === 'recognizing') h += '<div class="progress"><span class="spin"></span>正在识别 ' + esc(inv.file) + '…</div>';
+  h += explainCard(inv);
   h += '<section class="card pad stack" aria-label="审核结果" id="rv-checks">' + checksHtml(inv, au) + '</section>';
   h += '<section class="card pad stack" aria-label="识别字段"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap"><h2 class="h">识别字段</h2><span class="sub">改错后自动重新审核</span></div><div class="fgrid" id="rv-fields">' + fieldsHtml(inv, au) + '</div>' +
     (fileMap[inv.id] || inv.archive ? '<div class="actions"><button class="btn sm" type="button" data-act="retry" data-id="' + inv.id + '"' + (inv.status === 'recognizing' ? ' disabled' : '') + '>重新识别</button>' +
@@ -815,7 +819,7 @@ function viewReview(id){
       emps().slice().sort(function(a, b){ return byName(a.name, b.name); }).map(function(e){ return '<option value="' + e.id + '"' + (curEmp && curEmp.id === e.id ? ' selected' : '') + '>' + esc(e.name + (e.dept ? '（' + e.dept + '）' : '')) + '</option>'; }).join('') + '</select></label>' +
     (inv.sender && !curEmp ? '<span class="sub">这个邮箱还没登记，可以在上面直接选员工，或者到 <a href="#staff">员工</a> 页把邮箱登记到员工名下。</span>' : '') +
     (function(){
-      var dr = memoDraft(au), auto = !inv.memo && !!dr;
+      var dr = memoDraft(au, inv), auto = !inv.memo && !!dr;
       return '<label class="fld" for="memo"><span style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">复核意见<span class="sub" id="memo-hint">' + (auto ? '已按审核发现自动填写，可以直接修改' : '') + '</span></span>' +
         '<textarea id="memo" rows="' + (dr ? 5 : 3) + '" data-id="' + inv.id + '" data-auto="' + (auto ? '1' : '0') + '" placeholder="例如：已确认为 8 人客户招待，人均未超标，同意报销">' + esc(auto ? dr : inv.memo) + '</textarea></label>' +
         (dr ? '<div class="actions" style="font-size:12px;margin-top:-4px"><button class="linkbtn" type="button" data-act="memo-fill" data-id="' + inv.id + '">按审核发现重新填写</button></div>' : '');
@@ -829,11 +833,13 @@ function viewReview(id){
   return h;
 }
 // 复核意见草稿：把拦截、复核的发现列出来，人工再改
-function memoDraft(au){
+function memoDraft(au, inv){
   if (!au) return '';
   var bad = au.checks.filter(function(c){ return c.k === 'fail' || c.k === 'warn'; });
   if (!bad.length) return '';
-  return '审核发现：\n' + bad.map(function(c, n){ return (bad.length > 1 ? (n + 1) + '. ' : '') + c.title + (c.detail ? '：' + c.detail : ''); }).join('\n');
+  var ex = inv ? explainOf(inv) : null;
+  return '审核发现：\n' + bad.map(function(c, n){ return (bad.length > 1 ? (n + 1) + '. ' : '') + c.title + (c.detail ? '：' + c.detail : ''); }).join('\n') +
+    (ex ? '\n员工说明' + (ex.reply ? '（回复邮件）' : '') + '：' + ex.text.replace(/\s+/g, ' ').slice(0, 120) : '');
 }
 var MEMO_END = {approved:'处理：已核实，同意报销。', rejected:'处理：驳回，请重新开具发票或换票后再报销。', returned:'处理：请补充说明后重新提交。'};
 function archiveCard(inv){
@@ -854,10 +860,10 @@ function stdCard(inv){
   if (cat === '住宿'){
     var c = cityOf(inv), nn = nightsOf(inv);
     h += '<div class="fgrid"><label class="fld" for="tr-city">出差城市' + (c.auto && c.city ? '（自动识别）' : '') + '<input id="tr-city" data-trip="city" list="city-list" value="' + esc(tr.city || '') + '" placeholder="' + esc(c.city || '例如 上海') + '"></label>' +
-      '<label class="fld" for="tr-nights">住宿晚数' + (nn.auto && !nn.guessed ? '（按明细）' : '') + '<input id="tr-nights" data-trip="nights" class="mono" inputmode="numeric" value="' + esc(tr.nights || '') + '" placeholder="' + nn.n + '"></label></div>' +
+      '<label class="fld" for="tr-nights">住宿晚数' + (tr.from && tr.from.nights === 'mail' ? '（从邮件读取）' : nn.auto && !nn.guessed ? '（按明细）' : '') + '<input id="tr-nights" data-trip="nights" class="mono" inputmode="numeric" value="' + esc(tr.nights || '') + '" placeholder="' + nn.n + '"></label></div>' +
       '<datalist id="city-list">' + allCities().map(function(x){ return '<option value="' + esc(x) + '">'; }).join('') + '</datalist>';
   } else {
-    h += '<div class="fgrid"><label class="fld" for="tr-persons">用餐人数<input id="tr-persons" data-trip="persons" class="mono" inputmode="numeric" value="' + esc(tr.persons || '') + '" placeholder="1"></label>' +
+    h += '<div class="fgrid"><label class="fld" for="tr-persons">用餐人数' + (tr.from && tr.from.persons === 'mail' ? '（从邮件读取）' : '') + '<input id="tr-persons" data-trip="persons" class="mono" inputmode="numeric" value="' + esc(tr.persons || '') + '" placeholder="1"></label>' +
       '<span class="sub" style="align-self:end">招待客户的，在复核意见里写明客户单位和人数</span></div>';
   }
   var sl = stdLimit(inv);
@@ -922,7 +928,7 @@ function refreshReview(inv){
   var p = $('#rv-paper'); if (p) p.innerHTML = paper(inv, au);
   var ch = $('#rv-chip'); if (ch) ch.innerHTML = chip(inv, au);
   var me = $('#memo');
-  if (me && me.getAttribute('data-auto') === '1' && document.activeElement !== me){ me.value = memoDraft(au); var mh = $('#memo-hint'); if (mh) mh.textContent = me.value ? '已按审核发现自动填写，可以直接修改' : ''; }
+  if (me && me.getAttribute('data-auto') === '1' && document.activeElement !== me){ me.value = memoDraft(au, inv); var mh = $('#memo-hint'); if (mh) mh.textContent = me.value ? '已按审核发现自动填写，可以直接修改' : ''; }
   var sd = $('#rv-std'); if (sd && !sd.contains(document.activeElement)) sd.innerHTML = stdCard(inv);
   else { var sr = $('#std-res'), sl = stdLimit(inv); if (sr && sl){ sr.className = num(inv.f.total) > sl.limit + 0.001 ? 'status-bad' : 'status-ok'; sr.textContent = sl.text + ' = ' + fmt(sl.limit) + '；发票 ' + fmt(num(inv.f.total)); } }
   var t = $('#rv-title'); if (t) t.textContent = (inv.f.seller || inv.file || '未命名发票') + (num(inv.f.total) != null ? ' · ' + fmt(num(inv.f.total)) : '');
@@ -1326,6 +1332,66 @@ function openOperator(){
   $('#op-name').focus(); $('#op-name').select();
 }
 
+/* ---------- 员工在邮件里写的说明 ---------- */
+// 邮件正文跟着发票保存；员工回复的说明挂到原来的发票上。只做提示，不会因为「领导已同意」就自动放行。
+var EXPLAIN_RE = /同意|批准|特批|审批|领导|经理|总监|老板|原因|说明|情况|因为|由于|出差|招待|客户/;
+function explainOf(inv){
+  var n = (inv.notes || []).filter(function(x){ return x && x.text; });
+  if (n.length) return {text:n[n.length - 1].text, reply:true};
+  var t = inv.mail && inv.mail.text;
+  return t && EXPLAIN_RE.test(t) ? {text:t, reply:false} : null;
+}
+var CN_NUM = {'一':1,'二':2,'两':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9};
+function cn2num(t){
+  if (/^\d+$/.test(t)) return Number(t);
+  var m = String(t).match(/^([一二两三四五六七八九])?(十)?([一二三四五六七八九])?$/);
+  if (!m || (!m[1] && !m[2])) return null;
+  if (!m[2]) return CN_NUM[m[1]];
+  return (m[1] ? CN_NUM[m[1]] : 1) * 10 + (m[3] ? CN_NUM[m[3]] : 0);
+}
+// 从邮件正文读用餐人数、住宿晚数：「共4人」「三位客户」「住了2晚」
+function mailHints(t){
+  t = String(t || ''); var o = {};
+  var p = t.match(/([0-9]{1,3}|[一二两三四五六七八九十]{1,3})\s*(?:个|名)?\s*(?:人(?!民)|位)/);
+  if (p){ var pn = cn2num(p[1]); if (pn > 0 && pn < 200) o.persons = pn; }
+  var nm = t.match(/([0-9]{1,2}|[一二两三四五六七八九十]{1,3})\s*(?:个)?\s*(?:晚|夜)/);
+  if (nm){ var nn = cn2num(nm[1]); if (nn > 0 && nn < 60) o.nights = nn; }
+  return o;
+}
+function applyMailHints(inv){
+  if (!inv.mail || !inv.mail.text || inv.status !== 'ready') return;
+  var h = mailHints(inv.mail.text), tr = inv.trip || {};
+  tr.from = tr.from || {};
+  if (inv.f.cat === '餐饮' && h.persons && !tr.persons){ tr.persons = h.persons; tr.from.persons = 'mail'; }
+  if (inv.f.cat === '住宿' && h.nights && !tr.nights){ tr.nights = h.nights; tr.from.nights = 'mail'; }
+  if (tr.persons || tr.nights) inv.trip = tr;
+}
+function hl(t){ return esc(t).replace(new RegExp('(' + EXPLAIN_RE.source + ')', 'g'), '<mark>$1</mark>'); }
+function explainCard(inv){
+  var t = inv.mail && inv.mail.text, notes = inv.notes || [];
+  if (!t && !notes.length) return '';
+  var h = '<section class="card pad stack explain" aria-label="员工说明"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap"><h2 class="h">员工说明</h2><span class="sub">员工在邮件里写的原话，只作参考，需要财务判断</span></div>';
+  if (t) h += '<div class="say"><div class="sub">' + esc(inv.mail.subject || '') + (inv.mail.date ? ' · ' + esc(fmtDateTime(inv.mail.date)) : '') + '</div><div class="say-t">' + hl(t) + '</div></div>';
+  notes.forEach(function(n){ h += '<div class="say reply"><div class="sub">回复邮件「' + esc(n.subject || '') + '」' + (n.date ? ' · ' + esc(fmtDateTime(n.date)) : '') + '</div><div class="say-t">' + hl(n.text || '（没有写内容）') + '</div></div>'; });
+  return h + '</section>';
+}
+// 回复邮件对应哪几张发票：看它回复的是员工原来的邮件，还是我们发出的通知
+function relatedInvoices(m){
+  var refs = (m.refs || []);
+  if (!refs.length) return [];
+  return invoices.filter(function(i){ return (i.mail && i.mail.msgId && refs.indexOf(i.mail.msgId) >= 0 && i.mail.msgId !== m.msgId) || (i.notice && i.notice.messageId && refs.indexOf(i.notice.messageId) >= 0); });
+}
+function attachNote(x){
+  var rel = relatedInvoices(x), n = 0;
+  rel.forEach(function(i){
+    i.notes = i.notes || [];
+    if (i.notes.some(function(o){ return o.msgId === x.msgId; })) return;
+    i.notes.push({msgId:x.msgId, from:x.from, subject:x.subject, date:x.date, text:x.text || ''});
+    audLog('员工回复说明', invT(i), (x.text || '').replace(/\s+/g, ' ').slice(0, 200)); n++;
+  });
+  return n;
+}
+
 /* ---------- 回邮件通知报销人 ---------- */
 // 审核发现问题后，按发件邮箱合并成一封回信：列出每张有问题的发票、问题和处理办法。财务看过、可修改，再点发送。
 var NOTICE_HOW = {
@@ -1338,6 +1404,8 @@ var NOTICE_HOW = {
   sellerTax:'销售方税号格式异常，请核对发票', lineSum:'发票明细合计对不上，请核对发票',
   unclear:'发票不清楚或信息不全，请直接发送电子发票原件（PDF、OFD 或 XML），不要拍照或截图'
 };
+// 没有发票、但回复的是我们发的通知或员工原来的邮件：这是员工补的说明
+function isNote(m){ return !m.files.length && !!m.text && relatedInvoices(m).length > 0; }
 function sameAddr(a, b){ return String(a || '').toLowerCase() === String(b || '').toLowerCase(); }
 function noticeIssues(inv, A){
   if (inv.status === 'error') return [{title:'没能识别', detail:inv.err || '', how:NOTICE_HOW.unclear}];
@@ -1431,7 +1499,7 @@ function sendNotice(){
     var at = new Date().toISOString();
     d.ids.forEach(function(id){
       var i = findInv(id); if (!i) return;
-      i.notice = {at:at, by:who(), to:d.to, subject:subject};
+      i.notice = {at:at, by:who(), to:d.to, subject:subject, messageId:(r.data && r.data.messageId) || ''};
       audLog('邮件通知报销人', invT(i), '发给 ' + d.to + '：' + subject);
     });
     save(); closeNotice(); render(); toast('已发邮件通知 ' + d.name + '（' + d.ids.length + ' 张发票）');
@@ -1505,16 +1573,21 @@ function viewMail(){
 
   var R = mailUi.result;
   if (R){
-    var nFiles = 0, nSeen = 0, nSel = 0;
-    R.messages.forEach(function(m){ m.files.forEach(function(f){ nFiles++; if (f.seen) nSeen++; if (mailUi.sel[f.id]) nSel++; }); });
-    h += '<section class="card" aria-label="邮件清单"><div class="filters" style="justify-content:space-between"><div><b>' + esc(mailUi.scanLabel || R.senders.join('、')) + '</b> <span class="muted">最近 ' + R.days + ' 天：' + R.messages.length + ' 封邮件，' + nFiles + ' 个发票文件' + (nSeen ? '（' + nSeen + ' 个已导入过）' : '') + '</span></div>' +
-      (nFiles ? '<div class="actions"><button class="linkbtn" type="button" data-act="mail-all">全选</button><button class="linkbtn muted" type="button" data-act="mail-none">全不选</button></div>' : '') + '</div>';
+    var nFiles = 0, nSeen = 0, nSel = 0, nNotes = 0;
+    R.messages.forEach(function(m){ m.files.forEach(function(f){ nFiles++; if (f.seen) nSeen++; if (mailUi.sel[f.id]) nSel++; }); if (isNote(m)){ nNotes++; if (mailUi.sel['note:' + m.uid]) nSel++; } });
+    h += '<section class="card" aria-label="邮件清单"><div class="filters" style="justify-content:space-between"><div><b>' + esc(mailUi.scanLabel || R.senders.join('、')) + '</b> <span class="muted">最近 ' + R.days + ' 天：' + R.messages.length + ' 封邮件，' + nFiles + ' 个发票文件' + (nSeen ? '（' + nSeen + ' 个已导入过）' : '') + (nNotes ? '，' + nNotes + ' 封回复说明' : '') + '</span></div>' +
+      (nFiles || nNotes ? '<div class="actions"><button class="linkbtn" type="button" data-act="mail-all">全选</button><button class="linkbtn muted" type="button" data-act="mail-none">全不选</button></div>' : '') + '</div>';
     if (!R.messages.length) h += '<div class="empty">没有找到这些发件人在最近 ' + R.days + ' 天发来的邮件。可以换个时间范围，或者确认发件人邮箱有没有写错。</div>';
     R.messages.forEach(function(m){
       var me = empByEmail(m.from);
       h += '<div class="mailmsg"><div class="mailhead"><span><b>' + esc(me ? me.name : (m.fromName || m.from)) + '</b> <span class="muted mono" style="font-size:12px">' + esc(m.from) + '</span></span><span class="muted mono" style="font-size:12px">' + esc(fmtDateTime(m.date)) + '</span></div>' +
-        '<div class="mailsubj">' + esc(m.subject) + '</div>';
-      if (!m.files.length && !m.links.length) h += '<div class="muted" style="font-size:12px">这封邮件里没有发票文件</div>';
+        '<div class="mailsubj">' + esc(m.subject) + '</div>' +
+        (m.text ? '<div class="mailtext">' + hl(m.text.replace(/\s+/g, ' ').slice(0, 140)) + (m.text.length > 140 ? '…' : '') + '</div>' : '');
+      if (isNote(m)){
+        var rel = relatedInvoices(m);
+        h += '<label class="mailfile" for="mf-note-' + m.uid + '"><input type="checkbox" class="mail-file" id="mf-note-' + m.uid + '" data-fid="note:' + m.uid + '"' + (mailUi.sel['note:' + m.uid] ? ' checked' : '') + '><span class="chip review">回复说明</span><span style="min-width:0;overflow-wrap:anywhere">挂到 ' + rel.length + ' 张发票上：' + esc(rel.map(function(i){ return (i.f.seller || i.file || '') + (num(i.f.total) != null ? ' ' + fmt(num(i.f.total)) : ''); }).join('、')) + '</span>' + (m.noteSeen ? '<span class="chip idle">已导入过</span>' : '') + '</label>';
+      }
+      else if (!m.files.length && !m.links.length) h += '<div class="muted" style="font-size:12px">这封邮件里没有发票文件</div>';
       m.files.forEach(function(f){
         h += '<label class="mailfile" for="mf-' + esc(f.id) + '"><input type="checkbox" class="mail-file" id="mf-' + esc(f.id) + '" data-fid="' + esc(f.id) + '"' + (mailUi.sel[f.id] ? ' checked' : '') + '><span class="mono" style="min-width:0;overflow-wrap:anywhere">' + esc(f.name) + '</span><span class="muted" style="font-size:12px">' + fmtSize(f.size) + '</span>' + (f.seen ? '<span class="chip idle">已导入过</span>' : '') + '</label>';
       });
@@ -1523,7 +1596,7 @@ function viewMail(){
       });
       h += '</div>';
     });
-    if (nFiles) h += '<div class="tbl-foot" style="align-items:center"><span>同一张发票导入两次会被「重复报销」规则拦下</span><button class="btn lg primary" type="button" data-act="mail-import"' + (!nSel || mailUi.importing ? ' disabled' : '') + '>导入选中的 ' + nSel + ' 个文件</button></div>';
+    if (nFiles || nNotes) h += '<div class="tbl-foot" style="align-items:center"><span>同一张发票导入两次会被「重复报销」规则拦下' + (nNotes ? '；回复说明会挂到对应的发票上，财务复核时能看到' : '') + '</span><button class="btn lg primary" type="button" data-act="mail-import"' + (!nSel || mailUi.importing ? ' disabled' : '') + '>导入选中的 ' + nSel + ' 项</button></div>';
     h += '</section>';
   }
   return h;
@@ -1564,7 +1637,7 @@ function mailAction(act, t){
     window.api.mailScan({senders:senders, days:Number(mailUi.days)}).then(function(r){
       if (!r || !r.ok){ mailUi.error = (r && r.message) || '检查邮件失败'; return; }
       mailUi.result = r.data;
-      r.data.messages.forEach(function(m){ m.files.forEach(function(f){ if (!f.seen) mailUi.sel[f.id] = true; }); });
+      r.data.messages.forEach(function(m){ m.files.forEach(function(f){ if (!f.seen) mailUi.sel[f.id] = true; }); if (isNote(m) && !m.noteSeen) mailUi.sel['note:' + m.uid] = true; });
       cfg.recentSenders = manual.concat((cfg.recentSenders || []).filter(function(s){ return manual.indexOf(s) < 0; })).slice(0, 12);
       save();
     }).then(function(){ mailUi.scanning = false; render(); });
@@ -1573,7 +1646,7 @@ function mailAction(act, t){
   if (act === 'mail-emp'){ var eid = t.getAttribute('data-id'); if (mailUi.empSel[eid]) delete mailUi.empSel[eid]; else mailUi.empSel[eid] = true; render(); return true; }
   if (act === 'mail-allemps'){ var E = emps(), on = E.length && E.every(function(e){ return mailUi.empSel[e.id]; }); mailUi.empSel = {}; if (!on) E.forEach(function(e){ mailUi.empSel[e.id] = true; }); render(); return true; }
   if (act === 'mail-all' || act === 'mail-none'){
-    (mailUi.result ? mailUi.result.messages : []).forEach(function(m){ m.files.forEach(function(f){ if (act === 'mail-all') mailUi.sel[f.id] = true; else delete mailUi.sel[f.id]; }); });
+    (mailUi.result ? mailUi.result.messages : []).forEach(function(m){ m.files.forEach(function(f){ if (act === 'mail-all') mailUi.sel[f.id] = true; else delete mailUi.sel[f.id]; }); if (isNote(m)){ if (act === 'mail-all') mailUi.sel['note:' + m.uid] = true; else delete mailUi.sel['note:' + m.uid]; } });
     render(); return true;
   }
   if (act === 'mail-link'){ window.api.mailOpenLink(t.getAttribute('data-url')); return true; }
@@ -1584,17 +1657,18 @@ function mailAction(act, t){
     window.api.mailImport(mailUi.result.scanId, ids).then(function(r){
       mailUi.importing = false;
       if (!r || !r.ok){ mailUi.error = (r && r.message) || '导入失败'; render(); return; }
-      var files = [], metas = [];
+      var files = [], metas = [], noteN = 0, noteInv = 0;
       r.data.forEach(function(x){
+        if (x.note){ noteN++; noteInv += attachNote(x); return; }
         var ext = (x.name.match(/\.(\w+)$/) || [])[1] || '';
         var type = {pdf:'application/pdf', xml:'text/xml', jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', webp:'image/webp'}[ext.toLowerCase()] || '';
         files.push(new File([x.data], x.name, {type:type}));
         var xe = empByEmail(x.from);
-        metas.push({sender:x.from, senderName:x.fromName, employeeId: xe ? xe.id : null, mail:{subject:x.subject, date:x.date, msgId:x.msgId || ''}});
+        metas.push({sender:x.from, senderName:x.fromName, employeeId: xe ? xe.id : null, mail:{subject:x.subject, date:x.date, msgId:x.msgId || '', text:x.text || '', refs:x.refs || []}});
       });
-      mailUi.result.messages.forEach(function(m){ m.files.forEach(function(f){ if (mailUi.sel[f.id]){ f.seen = true; delete mailUi.sel[f.id]; } }); });
-      toast('已导入 ' + files.length + ' 个文件，正在识别');
-      enqueue(files, metas);
+      mailUi.result.messages.forEach(function(m){ m.files.forEach(function(f){ if (mailUi.sel[f.id]){ f.seen = true; delete mailUi.sel[f.id]; } }); if (mailUi.sel['note:' + m.uid]){ m.noteSeen = true; delete mailUi.sel['note:' + m.uid]; } });
+      toast((files.length ? '已导入 ' + files.length + ' 个文件，正在识别' : '') + (files.length && noteN ? '；' : '') + (noteN ? noteN + ' 封回复说明已挂到 ' + noteInv + ' 张发票上' : ''));
+      if (files.length) enqueue(files, metas); else { save(); render(); }
     });
     return true;
   }
@@ -2103,7 +2177,7 @@ document.addEventListener('click', function(e){
   else if (act === 'ntf-send') sendNotice();
   else if (act === 'memo-fill'){
     var mi = findInv(t.getAttribute('data-id')), mt = $('#memo');
-    if (mi && mt){ mt.value = memoDraft(audit(mi, invoices)); mt.setAttribute('data-auto', '1'); mi.memo = ''; save(); var mh2 = $('#memo-hint'); if (mh2) mh2.textContent = '已按审核发现自动填写，可以直接修改'; mt.focus(); }
+    if (mi && mt){ mt.value = memoDraft(audit(mi, invoices), mi); mt.setAttribute('data-auto', '1'); mi.memo = ''; save(); var mh2 = $('#memo-hint'); if (mh2) mh2.textContent = '已按审核发现自动填写，可以直接修改'; mt.focus(); }
   }
   else if (act === 'op-cancel'){ var om = $('#op-modal'); if (om) om.remove(); }
   else if (act === 'op-ok'){
@@ -2306,13 +2380,14 @@ function exportList(list, label){
   var issues = function(i){ return A[i.id].checks.filter(function(c){ return c.k === 'fail' || c.k === 'warn'; }).map(function(c){ return c.title + '：' + c.detail; }).join('；'); };
   var how = function(i){ return i.source === 'sample' ? '示例' : i.source === 'manual' ? '手动录入' : METHOD[i.method] || ''; };
   var dept = function(i){ var e = employeeOf(i); return e ? e.dept || '' : ''; };
-  var H1 = ['报销人','部门','提交邮箱','提交时间','审核结果','处理结果','发票类型','发票代码','发票号码','开票日期','购买方','购买方税号','销售方','销售方税号','金额','税额','价税合计','税率','费用类别','项目','明细行数','审核发现','复核意见','邮件主题','邮件时间','来源文件','识别方式','处理人','处理时间','原件存档','原件 SHA-256'];
+  var H1 = ['报销人','部门','提交邮箱','提交时间','审核结果','处理结果','发票类型','发票代码','发票号码','开票日期','购买方','购买方税号','销售方','销售方税号','金额','税额','价税合计','税率','费用类别','项目','明细行数','审核发现','复核意见','邮件主题','邮件时间','来源文件','识别方式','处理人','处理时间','原件存档','原件 SHA-256','员工说明'];
   var S1 = [H1].concat(list.map(function(i){
     var f = i.f;
     return [personLabel(i), dept(i), i.sender || '', fmtDateTime(subDate(i).toISOString()), res(i), dec(i), f.type, f.code || '', f.no || '', f.date || '', f.buyer, f.buyerTax, f.seller, f.sellerTax,
       num(f.amount), num(f.tax), num(f.total), f.rate == null || f.rate === '' ? '' : f.rate + '%', f.cat, f.items, (f.lines || []).length,
       issues(i), i.memo || '', i.mail ? i.mail.subject : '', i.mail ? fmtDateTime(i.mail.date) : '', i.file || '', how(i),
-      i.decidedBy || '', i.decidedAt ? fmtDateTime(i.decidedAt) : '', i.archive ? i.archive.path : '', i.archive ? i.archive.sha256 : ''];
+      i.decidedBy || '', i.decidedAt ? fmtDateTime(i.decidedAt) : '', i.archive ? i.archive.path : '', i.archive ? i.archive.sha256 : '',
+      [i.mail && i.mail.text ? i.mail.text : ''].concat((i.notes || []).map(function(n){ return '回复（' + fmtDateTime(n.date) + '）：' + n.text; })).filter(Boolean).join('\n')];
   }));
   var H2 = ['报销人','部门','提交邮箱','发票号码','开票日期','销售方','销售方税号','行号','项目名称','规格型号','单位','数量','单价','金额','税率','税额','审核结果','来源文件'];
   var S2 = [H2];
@@ -2331,7 +2406,7 @@ function exportList(list, label){
     for (var r = 1; r < rows.length; r++) moneyCols.forEach(function(c){ var cell = ws[XL.utils.encode_cell({r:r, c:c})]; if (cell && cell.t === 'n') cell.z = '#,##0.00'; });
     return ws;
   }
-  XL.utils.book_append_sheet(wb, sheet(S1, [10,10,24,16,8,12,18,14,24,12,26,22,26,22,12,10,12,8,10,26,8,50,24,24,16,24,16,10,16,44,66], [14,15,16]), '发票汇总');
+  XL.utils.book_append_sheet(wb, sheet(S1, [10,10,24,16,8,12,18,14,24,12,26,22,26,22,12,10,12,8,10,26,8,50,24,24,16,24,16,10,16,44,66,50], [14,15,16]), '发票汇总');
   XL.utils.book_append_sheet(wb, sheet(S2, [10,10,24,24,12,26,22,6,30,14,8,10,14,12,8,10,8,24], [13,15]), '发票明细');
   var data = XL.write(wb, {type:'array', bookType:'xlsx'});
   audLog('导出台账', {type:'ledger', id:'ledger', label:'发票台账'}, label + '，' + list.length + ' 张发票');

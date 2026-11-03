@@ -141,6 +141,29 @@ async function collect(mail, out, links, depth) {
   findLinks(mail).forEach((u) => links.push(u));
 }
 
+/* ---------- 邮件正文：员工写的说明（去掉引用的旧邮件） ---------- */
+function htmlToText(h) {
+  return String(h || '').replace(/<(script|style)[\s\S]*?<\/\1>/gi, '').replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|tr|li|h\d)>/gi, '\n')
+    .replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&quot;/g, '"');
+}
+const QUOTE_START = /^\s*(-{2,}\s*原始邮件\s*-{2,}|-{2,}\s*Original Message\s*-{2,}|-{2,}\s*转发的邮件\s*-{2,}|-{2,}\s*Forwarded message\s*-{2,}|在\s*.{1,80}写道\s*[:：]|On .{1,120}wrote:|发件人\s*[:：]|From\s*:\s*.+@)/im;
+function bodyText(mail) {
+  let t = mail.text || htmlToText(mail.html);
+  t = String(t || '').replace(/\r/g, '');
+  const m = t.match(QUOTE_START);
+  if (m && m.index > 0) t = t.slice(0, m.index);
+  t = t.split('\n').filter((l) => !/^\s*>/.test(l)).join('\n');
+  t = t.replace(/[ \t\u00a0]+/g, ' ').replace(/\n\s*\n+/g, '\n').trim();
+  return t.slice(0, 2000);
+}
+function refsOf(mail) {
+  const r = [];
+  const add = (x) => String(x || '').split(/\s+/).forEach((id) => { id = id.trim(); if (/^<.+>$/.test(id) && r.indexOf(id) < 0) r.push(id); });
+  add(mail.inReplyTo);
+  (Array.isArray(mail.references) ? mail.references : [mail.references]).forEach(add);
+  return r;
+}
+
 function key(msgId, name, size) { return [msgId || '', name, size].join('|'); }
 
 /* ---------- 按发件人搜索 ---------- */
@@ -207,6 +230,7 @@ async function scan(cfg, opts, seen, net, onProgress) {
         all.forEach((f) => { if (!uniq.some((u) => u.name === f.name && u.data.length === f.data.length)) uniq.push(f); });
         messages.push({
           uid: msg.uid, msgId, from: addr, fromName: from.name || '', subject: mail.subject || '（无主题）',
+          text: bodyText(mail), refs: refsOf(mail), noteSeen: seen.has('note|' + msgId),
           date: mail.date ? mail.date.toISOString() : '',
           files: uniq.map((f, n) => ({ id: msg.uid + ':' + n, name: f.name, size: f.data.length, data: f.data, key: key(msgId, f.name, f.data.length), seen: seen.has(key(msgId, f.name, f.data.length)) })),
           links: got.length ? [] : failedLinks
@@ -245,4 +269,4 @@ async function send(cfg, m) {
   finally { t.close(); }
 }
 
-module.exports = { PRESETS, test, scan, send };
+module.exports = { PRESETS, test, scan, send, bodyText };

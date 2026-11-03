@@ -492,13 +492,14 @@ fs.mkdirSync(out, { recursive: true });
       try {
         await c.connect();
         const lock = await c.getMailboxLock('INBOX');
-        try { for await (const m of c.fetch('1:*', { envelope: true })) { if (m.envelope.subject === subject) got = m.envelope; } } finally { lock.release(); }
+        try { for await (const m of c.fetch('1:*', { envelope: true, headers: ['in-reply-to', 'references'] })) { if (m.envelope.subject === subject) { got = m.envelope; console.log('    回信头：' + (m.headers ? m.headers.toString().replace(/\r?\n/g, ' | ') : '')); } } } finally { lock.release(); }
         await c.logout();
       } catch (e) { console.log('    读张三邮箱出错：' + e.message); }
       console.log('    张三邮箱里的回信：' + JSON.stringify(got && { subject: got.subject, from: got.from, inReplyTo: got.inReplyTo }));
-      chk(!!got && got.inReplyTo && got.from[0].address === 'finance@test.local', '张三的邮箱收到回信（从收票邮箱发出，回复他原来的邮件）：' + subject);
+      chk(!!got && !!got.inReplyTo && got.from[0].address === 'finance@test.local', '张三的邮箱收到回信（从收票邮箱发出，回复他原来的邮件）：' + subject);
       const led = JSON.parse(fs.readFileSync(path.join(ud, 'ledger.json'), 'utf8'));
       const notified = led.invoices.filter((i) => i.notice && i.notice.to === target);
+      console.log('    这些发票记下的原邮件：' + JSON.stringify(notified.map((i) => i.mail)));
       chk(notified.length > 0, '回信里的 ' + notified.length + ' 张发票标为已通知');
       const logs = fs.readFileSync(path.join(ud, 'audit-log.jsonl'), 'utf8');
       chk(/邮件通知报销人/.test(logs), '操作记录里有这次通知');

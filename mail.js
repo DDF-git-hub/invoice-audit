@@ -238,7 +238,7 @@ async function send(cfg, m) {
     const r = await t.sendMail({
       from: { name: String(m.fromName || '财务部').slice(0, 40), address: cfg.user }, to: m.to,
       subject: String(m.subject || '').slice(0, 200), text: String(m.text || ''),
-      inReplyTo: m.inReplyTo || undefined, references: m.inReplyTo ? [m.inReplyTo] : undefined
+      inReplyTo: m.inReplyTo || undefined, references: Array.isArray(m.references) && m.references.length ? m.references.slice(-20) : (m.inReplyTo ? [m.inReplyTo] : undefined)
     });
     return { messageId: r.messageId || '', accepted: r.accepted || [] };
   } catch (e) { throw smtpError(e); }

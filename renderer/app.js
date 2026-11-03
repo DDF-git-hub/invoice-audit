@@ -1362,9 +1362,9 @@ function noticeDraft(addr){
   var A = auditAll(), list = noticeList(addr, A);
   if (!list.length) return null;
   var e = list[0] && employeeOf(list[0]), name = e ? e.name : (list[0].senderName || addr.split('@')[0]);
-  var subjects = {}, ids = {};
-  list.forEach(function(i){ if (i.mail && i.mail.subject) subjects[i.mail.subject] = 1; if (i.mail && i.mail.msgId) ids[i.mail.msgId] = 1; });
-  var sj = Object.keys(subjects), mids = Object.keys(ids);
+  var subjects = {}, mids = [];
+  list.forEach(function(i){ if (i.mail && i.mail.subject) subjects[i.mail.subject] = 1; if (i.mail && i.mail.msgId && mids.indexOf(i.mail.msgId) < 0) mids.push(i.mail.msgId); });
+  var sj = Object.keys(subjects);
   var subject = sj.length === 1 ? 'Re: ' + sj[0] + '（发票审核：' + list.length + ' 张需要处理）' : '报销发票审核结果：' + list.length + ' 张需要处理';
   var lines = [name + '，您好：', '', '您发来的报销发票，审核发现 ' + list.length + ' 张需要处理：', ''];
   list.forEach(function(i, n){
@@ -1379,7 +1379,7 @@ function noticeDraft(addr){
     lines.push('');
   });
   lines.push('处理好后，请把新的发票或说明直接回复到这个邮箱。没有问题的发票会正常报销。', '', who(), dayOf(new Date()), '（此邮件由发票审核台生成）');
-  return {to:addr, name:name, subject:subject, text:lines.join('\n'), ids:list.map(function(i){ return i.id; }), inReplyTo: mids.length === 1 ? mids[0] : ''};
+  return {to:addr, name:name, subject:subject, text:lines.join('\n'), ids:list.map(function(i){ return i.id; }), inReplyTo: mids.length ? mids[mids.length - 1] : '', references: mids};
 }
 function noticeBanner(){
   var P = noticePending();
@@ -1420,7 +1420,7 @@ function sendNotice(){
   if (!subject || !text.trim()){ $('#ntf-err').innerHTML = '<div class="errbox">主题和正文都要填</div>'; return; }
   ntfUi.sending = true;
   var btn = $('[data-act="ntf-send"]'); btn.disabled = true; btn.innerHTML = '<span class="spin"></span>正在发送…';
-  window.api.mailSend({to:d.to, subject:subject, text:text, inReplyTo:d.inReplyTo, fromName:who()}).then(function(r){
+  window.api.mailSend({to:d.to, subject:subject, text:text, inReplyTo:d.inReplyTo, references:d.references, fromName:who()}).then(function(r){
     if (!r || !r.ok){
       ntfUi.sending = false; btn.disabled = false; btn.textContent = '重新发送';
       $('#ntf-err').innerHTML = '<div class="errbox">' + esc((r && r.message) || '发送失败') + '</div>';

@@ -495,6 +495,7 @@ fs.mkdirSync(out, { recursive: true });
         try { for await (const m of c.fetch('1:*', { envelope: true })) { if (m.envelope.subject === subject) got = m.envelope; } } finally { lock.release(); }
         await c.logout();
       } catch (e) { console.log('    读张三邮箱出错：' + e.message); }
+      console.log('    张三邮箱里的回信：' + JSON.stringify(got && { subject: got.subject, from: got.from, inReplyTo: got.inReplyTo }));
       chk(!!got && got.inReplyTo && got.from[0].address === 'finance@test.local', '张三的邮箱收到回信（从收票邮箱发出，回复他原来的邮件）：' + subject);
       const led = JSON.parse(fs.readFileSync(path.join(ud, 'ledger.json'), 'utf8'));
       const notified = led.invoices.filter((i) => i.notice && i.notice.to === target);

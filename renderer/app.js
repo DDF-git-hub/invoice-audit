@@ -235,13 +235,13 @@ function audit(inv, all){
   }
 
   if (f.seller && f.date && T != null){
-    var near = all.filter(function(o){ return o.id !== inv.id && o.status === 'ready' && normName(o.f.seller) === normName(f.seller) && o.f.date === f.date && num(o.f.total) === T && normNo(o.f.no) !== no; })[0];
+    var near = all.filter(function(o){ return o.id !== inv.id && o.status === 'ready' && o.createdAt < inv.createdAt && normName(o.f.seller) === normName(f.seller) && o.f.date === f.date && num(o.f.total) === T && normNo(o.f.no) !== no; })[0];
     if (near) add('nearDup', true, '疑似重复', '与 ' + (near.f.no || '另一张发票') + ' 同销售方、同日、同金额，可能一笔消费开了两张', ['seller','date','total']);
   }
 
   // 连号拆票：同一销售方、同一天、号码相差不超过 3
   if (no && f.seller && f.date){
-    var sibs = all.filter(function(o){ var n = normNo(o.f.no); return o.id !== inv.id && o.status === 'ready' && n && n !== no && n.length === no.length && normName(o.f.seller) === normName(f.seller) && o.f.date === f.date && consecutive(n, no); });
+    var sibs = all.filter(function(o){ var n = normNo(o.f.no); return o.id !== inv.id && o.status === 'ready' && o.createdAt < inv.createdAt && n && n !== no && n.length === no.length && normName(o.f.seller) === normName(f.seller) && o.f.date === f.date && consecutive(n, no); });
     if (sibs.length){
       var sum = r2(sibs.reduce(function(x, o){ return x + (num(o.f.total) || 0); }, T || 0)), lim0 = cfg.limits[f.cat];
       add('splitNo', true, '连号拆票', '与 ' + sibs.map(function(o){ return o.f.no; }).join('、') + ' 号码连续，同一销售方同一天开具，合计 ' + fmt(sum) + (lim0 && lim0.v != null && sum > lim0.v && (T || 0) <= lim0.v ? '，合计超过' + f.cat + '单张上限 ' + fmt(lim0.v) + '，可能为避开限额拆开开票' : ''), ['no']);
@@ -301,14 +301,20 @@ function reviewQueue(audits){
 
 /* ---------- 示例数据 ---------- */
 function makeSamples(){
-  var base = Date.now() - 60000, buyer = '上海示例科技有限公司', bt = '91310115MA1K4A2B3A';
+  // 购买方用「规则设置」里当前的第一个公司抬头，改了抬头示例也不会全部报「抬头不符」
+  var co = cfg.companies[0] && cfg.companies[0].name ? cfg.companies[0] : {name:'上海示例科技有限公司', taxId:'91310115MA1K4A2B3A'};
+  var base = Date.now() - 60000, buyer = co.name, bt = normTax(co.taxId) || '91310115MA1K4A2B3A';
+  var btWrong = bt.slice(0, -1) + (bt.slice(-1) === 'D' ? 'E' : 'D');
+  // 跨年度只在「去年年底的票、今年报、还没超期」时能单独演示；其他月份改成演示「超过报销期限」，保证一张发票只有一个问题
+  var yd = new Date(new Date().getFullYear() - 1, 11, 26), crossOk = daysSince(dayOf(yd)) <= cfg.days;
+  var j2 = dayOf(new Date(new Date().getFullYear(), 0, 2)), lateDate = daysSince(j2) > cfg.days ? j2 : -(cfg.days + 30);
   // 示例：每种情况一张，发票类型尽量不同
   var S = [
     // 重复报销：同一张住宿票报了两次
     ['数电票（普通发票）','住宿','26312000000184620371',-14,buyer,bt,'上海锦江之星酒店管理有限公司','91310000132205678K',528.30,31.70,560.00,6,'*住宿服务*住宿费',0.97,'锦江之星_1013.pdf'],
     ['数电票（普通发票）','住宿','26312000000184620371',-14,buyer,bt,'上海锦江之星酒店管理有限公司','91310000132205678K',528.30,31.70,560.00,6,'*住宿服务*住宿费',0.96,'IMG_4790.jpg'],
     // 购买方税号不符
-    ['数电票（普通发票）','其他','26442000000091273518',-7,buyer,'91310115MA1K4A2B3D','深圳顺丰速运有限公司','91440300279467123Q',345.63,10.37,356.00,3,'*物流辅助服务*收派服务费',0.95,'顺丰_1020.pdf'],
+    ['数电票（普通发票）','其他','26442000000091273518',-7,buyer,btWrong,'深圳顺丰速运有限公司','91440300279467123Q',345.63,10.37,356.00,3,'*物流辅助服务*收派服务费',0.95,'顺丰_1020.pdf'],
     // 金额不平（纸质专票）
     ['增值税专用发票','办公用品','04918736',-6,buyer,bt,'上海宏达五金有限公司','91310112MA1GB7HK2N',884.96,115.04,990.00,13,'*五金制品*工具套装',0.94,'宏达五金_专票.jpg'],
     // 超出餐饮上限 + 专票进项不得抵扣
@@ -319,10 +325,10 @@ function makeSamples(){
     // 连号拆票：单张都没超上限，合计超了
     ['数电票（普通发票）','餐饮','26312000000215530417',-2,buyer,bt,'上海鼎泰丰餐饮有限公司','91310104MA1FR2K91E',452.83,27.17,480.00,6,'*餐饮服务*餐费',0.96,'鼎泰丰_1.pdf'],
     ['数电票（普通发票）','餐饮','26312000000215530418',-2,buyer,bt,'上海鼎泰丰餐饮有限公司','91310104MA1FR2K91E',471.70,28.30,500.00,6,'*餐饮服务*餐费',0.96,'鼎泰丰_2.pdf'],
-    // 识别不清：照片折痕，号码没认出来
-    ['增值税电子普通发票','住宿','',-12,buyer,bt,'杭州西湖国宾馆','91330100143059876R',528.30,31.70,560.00,6,'*住宿服务*住宿费',0.62,'IMG_3302.jpg'],
-    // 跨年度（同时超过报销期限）
-    ['数电票（普通发票）','住宿','25312000000198812046',(new Date().getFullYear() - 1) + '-12-26',buyer,bt,'上海和平饭店有限公司','91310000132203456N',528.30,31.70,560.00,6,'*住宿服务*住宿费',0.97,'和平饭店_去年.pdf']
+    // 识别不清：照片有折痕，识别把握低
+    ['增值税电子普通发票','住宿','26332000000184735219',-12,buyer,bt,'杭州西湖国宾馆','91330100143059876R',528.30,31.70,560.00,6,'*住宿服务*住宿费',0.62,'IMG_3302.jpg'],
+    // 跨年度（1–3 月）或超过报销期限（其他月份）
+    ['数电票（普通发票）','住宿', crossOk ? '25312000000198812046' : '26312000000198812046', crossOk ? dayOf(yd) : lateDate,buyer,bt,'上海和平饭店有限公司','91310000132203456N',528.30,31.70,560.00,6,'*住宿服务*住宿费',0.97,(crossOk ? '和平饭店_去年.pdf' : '和平饭店_逾期.pdf')]
   ];
   // 出差示例：王芳（经理）去杭州 3 天：去程火车、住 2 晚、一顿饭、回程火车 → 出差补助 120 × 3 = 360 元
   S.push(['电子发票（铁路电子客票）','交通','26319166000003659901',-12,buyer,bt,'中国铁路上海局集团有限公司','91310000132212345X',67.89,6.11,74.00,9,'*运输服务*铁路旅客运输 上海虹桥-杭州东',0.97,'火车票_去程.pdf','wf']);
@@ -334,7 +340,7 @@ function makeSamples(){
   var demoEmp = emps().filter(function(e){ return e.name === '王芳（示例）'; })[0];
   if (!demoEmp){ demoEmp = {id:'e' + uid(), sample:true, name:'王芳（示例）', dept:'市场部', grade: std().grades[1] || std().grades[0] || '', emails:[], createdAt:Date.now()}; emps().push(demoEmp); }
   return S.map(function(s, i){
-    return {id:uid() + i, createdAt: base + i*1000, source:'sample', employeeId: s[15] === 'wf' ? demoEmp.id : null, file:s[14], status:'ready', conf:s[13], aiNotes: s[13] < 0.8 ? '发票号码区域被折痕遮挡' : '', decision:null, memo:'',
+    return {id:uid() + i, createdAt: base + i*1000, source:'sample', employeeId: s[15] === 'wf' ? demoEmp.id : null, file:s[14], status:'ready', conf:s[13], aiNotes: s[13] < 0.8 ? '照片有折痕，部分字段看不清' : '', decision:null, memo:'',
       f:{type:s[0], cat:s[1], no:s[2], code:'', date: typeof s[3] === 'string' ? s[3] : isoOffset(s[3]), buyer:s[4], buyerTax:s[5], seller:s[6], sellerTax:s[7], amount:s[8], tax:s[9], total:s[10], rate:s[11], items:s[12],
         lines: s[16] || undefined}};
   });

@@ -1345,7 +1345,9 @@ function noticeIssues(inv, A){
   var au = A[inv.id] || audit(inv, invoices);
   var bad = au.checks.filter(function(c){ return c.k === 'fail' || c.k === 'warn'; });
   if (!bad.length) return inv.decision ? [{title:DEC[inv.decision], detail:'', how:'请按下面的财务意见处理'}] : [];
-  return bad.map(function(c){ return {title:c.title, detail:c.detail, how:NOTICE_HOW[c.id] || ''}; });
+  // 去掉只对财务有用的界面提示（如「可在下方填写」），员工看不到那个界面
+  function clean(t){ return String(t || '').split('。').filter(function(x){ return x && !/下方|复核页|对照原件/.test(x); }).join('。'); }
+  return bad.map(function(c){ return {title:c.title, detail:clean(c.detail), how:NOTICE_HOW[c.id] || ''}; });
 }
 // 某个发件邮箱下，有问题、还没通知过的发票
 function noticeList(addr, A){

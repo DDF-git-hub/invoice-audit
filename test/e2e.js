@@ -440,6 +440,25 @@ fs.mkdirSync(out, { recursive: true });
     if (await page.$('#person-filter')) { await page.selectOption('#person-filter', ''); await page.waitForTimeout(300); }
     await page.click('[data-filter="all"]');
     await page.waitForTimeout(300);
+    // 出差归集与补助：王芳（经理）杭州 3 天，去程火车、住 2 晚、一顿饭、回程火车
+    const hz = await page.evaluate(() => { const r = Array.from(document.querySelectorAll('tr[data-open]')).find((x) => /杭州西湖宾馆/.test(x.innerText)); return r && r.getAttribute('data-open'); });
+    chk(!!hz, '示例里有出差发票');
+    if (hz) {
+      await page.evaluate((id) => { location.hash = 'review-' + id; }, hz);
+      await page.waitForSelector('#rv-trip');
+      const tt = await page.evaluate(() => document.querySelector('#rv-trip').innerText);
+      chk(/共 3 天/.test(tt) && /杭州/.test(tt) && /360\.00/.test(tt) && (tt.match(/车票\/机票/g) || []).length === 2 && /楼外楼/.test(tt), '4 张发票归成一次出差：杭州 3 天，出差补助 ¥360.00');
+      await page.screenshot({ path: path.join(out, '19b-出差归集.png'), fullPage: true });
+      await page.evaluate(() => { location.hash = 'voucher'; });
+      const vcard = 'section[aria-label="凭证 王芳（示例）"]';
+      await page.waitForSelector(vcard, { timeout: 10000 }).catch(() => {});
+      const vl = await page.evaluate((c) => { const el = document.querySelector(c); if (!el) return null; return { lines: Array.from(el.querySelectorAll('tr.vline')).map((tr) => ({ code: tr.querySelector('[data-vf="code"]').value, amount: tr.querySelector('[data-vf="amount"]').value, summary: tr.querySelector('[data-vf="summary"]').value })), ok: /借贷平衡/.test(el.innerText) }; }, vcard);
+      const al = vl && vl.lines.find((l) => /出差补助/.test(l.summary));
+      chk(!!al && al.amount === '360.00' && al.code === '660102' && vl.ok, '凭证里自动加上出差补助 360.00（记差旅费 660102），借贷平衡');
+      await page.screenshot({ path: path.join(out, '19c-出差补助凭证.png'), fullPage: true });
+      await page.evaluate(() => { location.hash = 'ledger'; });
+      await page.waitForTimeout(400);
+    }
     const sid = await page.evaluate(() => { const r = Array.from(document.querySelectorAll('tr[data-open]')).find((x) => /香格里拉/.test(x.innerText)); return r && r.getAttribute('data-open'); });
     chk(!!sid, '示例里有职级标准的发票');
     if (sid) {

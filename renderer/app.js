@@ -20,7 +20,8 @@ var RULES = [
   {id:'bigAmt',    name:'大额发票',       how:'单张超过设定金额', lv:'review'},
   {id:'sellerTax', name:'销售方税号格式异常', how:'不是 15、18 或 20 位的有效格式', lv:'review'},
   {id:'lineSum',   name:'明细合计不一致', how:'各行明细的金额或税额相加，与票面合计对不上', lv:'review'},
-  {id:'unclear',   name:'识别不清',       how:'识别置信度低于 80%，或关键字段缺失', lv:'review'}
+  {id:'unclear',   name:'识别不清',       how:'识别置信度低于 80%，或关键字段缺失', lv:'review'},
+  {id:'tripCheck', name:'出差行程核对',   how:'同一次出差里，住宿日期要在往返车票 / 机票的日期之内', lv:'review'}
 ];
 var FIELDS = [
   {k:'type', label:'发票类型'}, {k:'cat', label:'费用类别', sel:true},
@@ -53,7 +54,8 @@ function defaultStd(){
       {name:'其他城市', cities:''}
     ],
     hotel:{'员工':[500,400,300], '经理':[700,550,400], '总监':[1000,800,600]},
-    meal:{'员工':100, '经理':150, '总监':200}
+    meal:{'员工':100, '经理':150, '总监':200},
+    allowOn:true, allow:{'员工':[100,80,60], '经理':[150,120,100], '总监':[200,160,120]}
   };
 }
 
@@ -75,6 +77,7 @@ function applyLoaded(p){
   return true;
 }
 function save(){
+  tripCache = null;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(function(){
     var payload = {v:1, savedAt:new Date().toISOString(), cfg:cfg, vouchers:vouchers, invoices:invoices.map(function(i){ var o = Object.assign({}, i); if (o.status === 'recognizing'){ o.status = 'error'; o.err = '识别被中断，可重新上传或手动补录'; } return o; })};
@@ -259,6 +262,12 @@ function audit(inv, all){
   if (f.sellerTax && !TAX_RE.test(normTax(f.sellerTax))) add('sellerTax', true, '销售方税号格式异常', f.sellerTax, ['sellerTax']);
 
   if (inv.qr && inv.qr.mismatch && inv.qr.mismatch.length) add('unclear', true, '与二维码不一致', inv.qr.mismatch.join('、') + '的识别结果和发票二维码不同，已按二维码修正，请核对', []);
+  var tp = tripOf(inv);
+  if (tp){
+    if (tp.hotels.indexOf(inv) >= 0 && tp.tickets.length >= 2) add('tripCheck', tp.mismatch.indexOf(inv.id) >= 0, tp.mismatch.indexOf(inv.id) >= 0 ? '住宿日期和车票对不上' : '住宿日期在往返车票之内',
+      tp.mismatch.indexOf(inv.id) >= 0 ? '住宿 ' + dstr(tripRange(inv)[0]) + ' 至 ' + inv.f.date + '，往返车票 ' + dstr(Math.min.apply(null, tp.tickets.map(function(i){ return dnum(i.f.date); }))) + ' 至 ' + dstr(Math.max.apply(null, tp.tickets.map(function(i){ return dnum(i.f.date); }))) + '，请核对行程' : tripLabel(tp), ['date']);
+    checks.push({id:'trip', k:'info', title:'出差 ' + tripLabel(tp), detail:'本次出差 ' + tp.invs.length + ' 张发票；出差补助：' + allowText(tp), fields:[]});
+  }
   var ex = explainOf(inv);
   if (ex) checks.push({id:'explain', k:'info', title: ex.reply ? '员工回复了说明' : '员工在邮件里附了说明', detail: '「' + ex.text.replace(/\s+/g, ' ').slice(0, 60) + (ex.text.length > 60 ? '…' : '') + '」，复核时请看「员工说明」，必要时要求附审批凭证', fields:[]});
   checks.push({id:'verify', k:'skip', title:'真伪查验', detail:'演示版未接入查验接口', fields:[]});
@@ -315,15 +324,19 @@ function makeSamples(){
     // 跨年度（同时超过报销期限）
     ['数电票（普通发票）','住宿','25312000000198812046',(new Date().getFullYear() - 1) + '-12-26',buyer,bt,'上海和平饭店有限公司','91310000132203456N',528.30,31.70,560.00,6,'*住宿服务*住宿费',0.97,'和平饭店_去年.pdf']
   ];
+  // 出差示例：王芳（经理）去杭州 3 天：去程火车、住 2 晚、一顿饭、回程火车 → 出差补助 120 × 3 = 360 元
+  S.push(['电子发票（铁路电子客票）','交通','26319166000003659901',-12,buyer,bt,'中国铁路上海局集团有限公司','91310000132212345X',67.89,6.11,74.00,9,'*运输服务*铁路旅客运输 上海虹桥-杭州东',0.97,'火车票_去程.pdf','wf']);
+  S.push(['数电票（普通发票）','餐饮','26332000000301239876',-11,buyer,bt,'杭州楼外楼餐饮有限公司','91330100143012345K',141.51,8.49,150.00,6,'*餐饮服务*餐费',0.96,'楼外楼.pdf','wf']);
+  S.push(['数电票（普通发票）','住宿','26332000000301234567',-10,buyer,bt,'杭州西湖宾馆有限公司','91330100MA27XY1234',1037.74,62.26,1100.00,6,'*住宿服务*住宿费',0.97,'杭州宾馆_2晚.pdf','wf',[{name:'*住宿服务*住宿费', spec:'标准间', unit:'晚', qty:2, price:518.87, amount:1037.74, rate:6, tax:62.26}]]);
+  S.push(['电子发票（铁路电子客票）','交通','26319166000003659977',-10,buyer,bt,'中国铁路上海局集团有限公司','91310000132212345X',67.89,6.11,74.00,9,'*运输服务*铁路旅客运输 杭州东-上海虹桥',0.97,'火车票_回程.pdf','wf']);
   // 职级标准示例：经理在上海住 2 晚，标准 700 元/晚，发票 1,580 元
-  S.push(['数电票（普通发票）','住宿','26312000000221904518',-3,buyer,bt,'上海静安香格里拉大酒店有限公司','91310000607281234C',1490.57,89.43,1580.00,6,'*住宿服务*住宿费',0.97,'香格里拉_2晚.pdf']);
+  S.push(['数电票（普通发票）','住宿','26312000000221904518',-3,buyer,bt,'上海静安香格里拉大酒店有限公司','91310000607281234C',1490.57,89.43,1580.00,6,'*住宿服务*住宿费',0.97,'香格里拉_2晚.pdf','wf',[{name:'*住宿服务*住宿费', spec:'高级大床房', unit:'晚', qty:2, price:745.28, amount:1490.57, rate:6, tax:89.43}]]);
   var demoEmp = emps().filter(function(e){ return e.name === '王芳（示例）'; })[0];
   if (!demoEmp){ demoEmp = {id:'e' + uid(), sample:true, name:'王芳（示例）', dept:'市场部', grade: std().grades[1] || std().grades[0] || '', emails:[], createdAt:Date.now()}; emps().push(demoEmp); }
   return S.map(function(s, i){
-    var last = i === S.length - 1;
-    return {id:uid() + i, createdAt: base + i*1000, source:'sample', employeeId: last ? demoEmp.id : null, file:s[14], status:'ready', conf:s[13], aiNotes: s[13] < 0.8 ? '发票号码区域被折痕遮挡' : '', decision:null, memo:'',
+    return {id:uid() + i, createdAt: base + i*1000, source:'sample', employeeId: s[15] === 'wf' ? demoEmp.id : null, file:s[14], status:'ready', conf:s[13], aiNotes: s[13] < 0.8 ? '发票号码区域被折痕遮挡' : '', decision:null, memo:'',
       f:{type:s[0], cat:s[1], no:s[2], code:'', date: typeof s[3] === 'string' ? s[3] : isoOffset(s[3]), buyer:s[4], buyerTax:s[5], seller:s[6], sellerTax:s[7], amount:s[8], tax:s[9], total:s[10], rate:s[11], items:s[12],
-        lines: last ? [{name:'*住宿服务*住宿费', spec:'高级大床房', unit:'晚', qty:2, price:745.28, amount:1490.57, rate:6, tax:89.43}] : undefined}};
+        lines: s[16] || undefined}};
   });
 }
 function emptyFields(){ return {type:'', cat:'其他', no:'', code:'', date:'', buyer:'', buyerTax:'', seller:'', sellerTax:'', amount:null, tax:null, total:null, rate:null, items:'', lines:[]}; }
@@ -665,6 +678,7 @@ function route(){
   return {v:'ledger'};
 }
 function render(){
+  tripCache = null;
   var r = route();
   var on = $('#opName'); if (on) on.textContent = who();
   $$('.nav a').forEach(function(a){ a.classList.toggle('on', a.getAttribute('data-nav') === r.v); if (a.getAttribute('data-nav') === r.v) a.setAttribute('aria-current','page'); else a.removeAttribute('aria-current'); });
@@ -747,7 +761,7 @@ function viewLedger(){
         '<td class="mono nowrap" style="font-size:12px">' + esc(i.f.date || '—') + '</td>' +
         '<td class="nowrap"' + (i.sender ? ' title="' + esc(i.sender) + '"' : '') + '>' + (personLabel(i) ? esc(personLabel(i)) + (i.sender && !employeeOf(i) ? ' <span class="muted" style="font-size:11px">未登记</span>' : '') : '<span class="muted">—</span>') + '</td>' +
         '<td>' + esc(i.f.seller || '—') + '</td>' +
-        '<td class="muted nowrap">' + esc(i.status === 'ready' ? i.f.cat : '—') + '</td>' +
+        '<td class="muted nowrap">' + esc(i.status === 'ready' ? i.f.cat : '—') + (i.status === 'ready' && tripOf(i) ? ' <span class="chip idle">出差</span>' : '') + '</td>' +
         '<td class="num mono">' + fmt(num(i.f.total)) + '</td>' +
         '<td class="issue">' + issue + '</td></tr>';
     });
@@ -813,6 +827,7 @@ function viewReview(id){
       (aiState === 'on' && inv.method !== 'ai' ? '<button class="btn sm" type="button" data-act="retry-ai" data-id="' + inv.id + '"' + (inv.status === 'recognizing' ? ' disabled' : '') + '>用 AI 重新识别</button>' : '') +
       (aiState !== 'on' && inv.method === 'ocr' ? '<a class="btn sm" href="#ai">开启 AI 识别更准</a>' : '') + '</div>' : '') + '</section>';
   var curEmp = employeeOf(inv);
+  h += tripCard(inv);
   h += '<section class="card pad stack" aria-label="报销标准" id="rv-std">' + stdCard(inv) + '</section>';
   h += '<section class="card pad stack" aria-label="复核处理">' +
     '<label class="fld" for="rv-emp">报销人<select id="rv-emp" data-id="' + inv.id + '"><option value="">' + (inv.sender ? '未登记（' + esc(inv.sender) + '）' : '未指定') + '</option>' +
@@ -980,7 +995,13 @@ function stdSettings(){
     S.tiers.map(function(t, i){
       var last = i === S.tiers.length - 1;
       return '<label class="fld" for="tier-' + i + '">' + esc(t.name) + (last ? '<span class="sub" style="padding:8px 0">上面没有列出的城市都按这一档</span>' : '<textarea id="tier-' + i + '" rows="2" data-tier="' + i + '">' + esc(t.cities) + '</textarea>') + '</label>';
-    }).join('') + '</div></section>';
+    }).join('') + '</div>';
+  h += '<div class="stack" style="gap:8px" aria-label="出差补助"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:baseline"><b>出差补助（元/天）</b>' +
+    '<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" id="allow-on"' + (S.allowOn !== false ? ' checked' : '') + ' style="width:18px;height:18px;accent-color:var(--accent)">启用</label></div>' +
+    '<span class="sub">同一员工日期挨着的车票、机票、住宿自动归成一次出差；天数按出发到返回算（含首尾），没有车票按住宿晚数 + 1。补助 = 每天标准 × 天数，生成凭证时记到这个员工的差旅费科目。</span>' +
+    '<div class="tbl-wrap"><table class="rtbl" style="min-width:420px"><thead><tr><th>职级</th>' + S.tiers.map(function(t){ return '<th>' + esc(t.name) + '</th>'; }).join('') + '</tr></thead><tbody>' +
+    S.grades.map(function(g){ return '<tr><td class="nowrap"><b>' + esc(g) + '</b></td>' + S.tiers.map(function(t, i){ var v = (S.allow[g] || [])[i]; return '<td><input class="inp mono" style="max-width:100px" inputmode="decimal" aria-label="' + esc(g + t.name + '出差补助') + '" data-allow="' + esc(g) + '" data-ti="' + i + '" value="' + (v == null ? '' : v) + '" placeholder="不补助"></td>'; }).join('') + '</tr>'; }).join('') +
+    '</tbody></table></div></div></section>';
   return h;
 }
 function viewAI(){
@@ -1041,7 +1062,11 @@ function personGroups(list){
 }
 function subDate(inv){ var d = inv.mail && inv.mail.date ? new Date(inv.mail.date) : new Date(inv.createdAt); return isNaN(d) ? new Date(inv.createdAt) : d; }
 /* ---------- 职级与城市标准 ---------- */
-function std(){ if (!cfg.std || !cfg.std.grades) cfg.std = defaultStd(); return cfg.std; }
+function std(){
+  if (!cfg.std || !cfg.std.grades) cfg.std = defaultStd();
+  if (!cfg.std.allow){ var d = defaultStd(); cfg.std.allow = {}; cfg.std.grades.forEach(function(g){ cfg.std.allow[g] = (d.allow[g] || []).slice(); }); if (cfg.std.allowOn == null) cfg.std.allowOn = true; }
+  return cfg.std;
+}
 function tierCities(t){ return String(t.cities || '').split(/[\s,，、;；]+/).filter(Boolean); }
 function allCities(){ var o = []; std().tiers.forEach(function(t){ tierCities(t).forEach(function(c){ if (o.indexOf(c) < 0) o.push(c); }); }); return o; }
 // 城市：复核时填的优先；否则从销售方名称、项目里找标准里列出的城市
@@ -1330,6 +1355,119 @@ function openOperator(){
     '<div class="actions"><button class="btn lg" type="button" data-act="op-cancel">取消</button><button class="btn lg primary grow" type="button" data-act="op-ok">确定</button></div></div>';
   document.body.appendChild(bg);
   $('#op-name').focus(); $('#op-name').select();
+}
+
+/* ---------- 出差：自动归集、行程核对、出差补助 ---------- */
+// 同一员工、日期挨着（相隔不超过 1 天）的火车票 / 机票和住宿归成一次出差，期间的餐费、市内交通一起挂上。
+// 天数 = 出发到返回，含首尾；没有车票时按住宿晚数 + 1。补助 = 职级 × 城市档次的每天标准 × 天数。
+// 财务可以把一张发票移出出差，或把两次出差合并（合并后存 tripId，不再自动拆分）。
+var tripCache = null;
+function dnum(iso){ var m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})$/); return m ? Math.round(Date.UTC(+m[1], +m[2] - 1, +m[3]) / 864e5) : null; }
+function dstr(n){ var d = new Date(n * 864e5); return d.getUTCFullYear() + '-' + ('0' + (d.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + d.getUTCDate()).slice(-2); }
+function md(n){ var s = dstr(n); return Number(s.slice(5, 7)) + '月' + Number(s.slice(8)) + '日'; }
+function isLongTrip(inv){ return inv.f.cat === '交通' && (isTravel(inv) || /铁路|火车|高铁|动车|航空|机票|航班|客票/.test((inv.f.items || '') + (inv.f.type || ''))); }
+function tripRange(inv){
+  var d = dnum(inv.f.date); if (d == null) return null;
+  if (inv.f.cat === '住宿'){ var n = nightsOf(inv).n; return [d - n, d]; }
+  return [d, d];
+}
+function tripEligible(i){ return i.status === 'ready' && i.decision !== 'rejected' && i.tripMode !== 'none' && employeeOf(i) && dnum(i.f.date) != null; }
+function buildTrip(emp, members, manualKey){
+  var anchors = members.filter(function(i){ return isLongTrip(i) || i.f.cat === '住宿'; });
+  var base = anchors.length ? anchors : members, s = Infinity, e = -Infinity;
+  base.forEach(function(i){ var r = tripRange(i); if (r){ s = Math.min(s, r[0]); e = Math.max(e, r[1]); } });
+  var tickets = members.filter(isLongTrip), hotels = members.filter(function(i){ return i.f.cat === '住宿'; });
+  var city = '';
+  hotels.forEach(function(h){ if (!city) city = cityOf(h).city; });
+  var S = std(), ti = tierOf(city), g = stdGrade(members[0]);
+  var t = {key: manualKey || ('a:' + emp.id + ':' + dstr(s)), manual: !!manualKey, emp: emp, start: s, end: e, days: e - s + 1, invs: members, anchors: anchors,
+    tickets: tickets, hotels: hotels, city: city, tier: ti, tierName: S.tiers[ti] ? S.tiers[ti].name : '', grade: g, mismatch: []};
+  // 住宿日期要在往返车票之内
+  if (tickets.length >= 2){
+    var ts = Math.min.apply(null, tickets.map(function(i){ return dnum(i.f.date); })), te = Math.max.apply(null, tickets.map(function(i){ return dnum(i.f.date); }));
+    hotels.forEach(function(h){ var r = tripRange(h); if (r && (r[0] < ts || r[1] > te)) t.mismatch.push(h.id); });
+  }
+  var per = g && S.allowOn !== false ? num((S.allow && S.allow[g] || [])[ti]) : null;
+  if (per > 0) t.allow = {per: per, amount: r2(per * t.days)};
+  // 补助放在包含「最后一张车票或住宿」的那张凭证里，一次出差只算一次
+  var last = anchors.slice().sort(function(a, b){ var ra = tripRange(a), rb = tripRange(b); return (ra[1] - rb[1]) || ((isLongTrip(a) ? 1 : 0) - (isLongTrip(b) ? 1 : 0)) || (a.createdAt - b.createdAt); });
+  t.lastAnchor = last.length ? last[last.length - 1] : members[members.length - 1];
+  return t;
+}
+function computeTrips(){
+  if (tripCache) return tripCache;
+  var byEmp = {}, trips = [];
+  invoices.filter(tripEligible).forEach(function(i){ var e = employeeOf(i); (byEmp[e.id] = byEmp[e.id] || {emp:e, list:[]}).list.push(i); });
+  Object.keys(byEmp).forEach(function(k){
+    var emp = byEmp[k].emp, list = byEmp[k].list, manual = {};
+    list.forEach(function(i){ if (i.tripId) (manual[i.tripId] = manual[i.tripId] || []).push(i); });
+    Object.keys(manual).forEach(function(id){ trips.push(buildTrip(emp, manual[id], id)); });
+    var free = list.filter(function(i){ return !i.tripId; });
+    var anchors = free.filter(function(i){ return isLongTrip(i) || i.f.cat === '住宿'; })
+      .map(function(i){ return {inv:i, r:tripRange(i)}; }).filter(function(x){ return x.r; }).sort(function(a, b){ return a.r[0] - b.r[0]; });
+    var groups = [];
+    anchors.forEach(function(x){
+      var g = groups[groups.length - 1];
+      if (g && x.r[0] <= g.e + 1){ g.items.push(x.inv); g.e = Math.max(g.e, x.r[1]); }
+      else groups.push({s:x.r[0], e:x.r[1], items:[x.inv]});
+    });
+    groups.forEach(function(g){
+      var others = free.filter(function(i){ if (g.items.indexOf(i) >= 0 || isLongTrip(i) || i.f.cat === '住宿') return false; var d = dnum(i.f.date); return (i.f.cat === '餐饮' || i.f.cat === '交通') && d >= g.s && d <= g.e; });
+      trips.push(buildTrip(emp, g.items.concat(others), null));
+    });
+  });
+  var byInv = {};
+  trips.forEach(function(t){ t.invs.forEach(function(i){ byInv[i.id] = t; }); });
+  tripCache = {trips: trips, byInv: byInv};
+  return tripCache;
+}
+function tripOf(inv){ return computeTrips().byInv[inv.id] || null; }
+function tripLabel(t){ return md(t.start) + (t.days > 1 ? '–' + md(t.end) : '') + ' · ' + t.days + ' 天' + (t.city ? ' · ' + t.city : ''); }
+function allowText(t){
+  if (!t.grade) return '「' + t.emp.name + '」还没设职级，设了职级才能算出差补助';
+  if (std().allowOn === false) return '出差补助已关闭（规则设置里可以开启）';
+  if (!t.allow) return t.grade + ' · ' + (t.tierName || '') + ' 没有设出差补助标准';
+  return t.grade + ' · ' + (t.city || '未识别城市') + '（' + t.tierName + '）' + fmtN(t.allow.per) + ' 元/天 × ' + t.days + ' 天 = ' + fmt(t.allow.amount);
+}
+// 出差里的科目：按这个员工的「住宿」规则（差旅费）
+function travelCode(emp){
+  var fake = {f:{cat:'住宿', seller:''}, employeeId: emp.id};
+  var r = matchRule(fake);
+  return r ? r.code : '';
+}
+function tripCard(inv){
+  if (inv.status !== 'ready') return '';
+  if (inv.tripMode === 'none') return '<section class="card pad stack" aria-label="出差" id="rv-trip"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:baseline"><h2 class="h">出差</h2><span class="sub">这张发票已设为不算出差</span></div><div class="actions"><button class="btn sm" type="button" data-act="trip-auto" data-id="' + inv.id + '">恢复自动归集</button></div></section>';
+  var t = tripOf(inv);
+  if (!t) return '';
+  var others = computeTrips().trips.filter(function(x){ return x !== t && x.emp.id === t.emp.id && Math.abs(x.start - t.start) <= 15; });
+  var h = '<section class="card pad stack" aria-label="出差" id="rv-trip"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:baseline"><h2 class="h">出差</h2><span class="sub">' + (t.manual ? '财务手动合并' : '软件按日期自动归集') + '</span></div>' +
+    '<div class="trip-sum"><b>' + esc(t.emp.name) + '</b> ' + esc(dstr(t.start)) + (t.days > 1 ? ' 至 ' + esc(dstr(t.end)) : '') + '，共 <b>' + t.days + '</b> 天' + (t.city ? '，' + esc(t.city) + '（' + esc(t.tierName) + '）' : '，没识别出城市') + '</div>' +
+    '<ol class="trip-list">' + t.invs.slice().sort(function(a, b){ return dnum(a.f.date) - dnum(b.f.date); }).map(function(i){
+      return '<li' + (i.id === inv.id ? ' class="cur"' : '') + '><span class="mono">' + esc(i.f.date) + '</span> ' + esc(i.f.cat) + (isLongTrip(i) ? '（车票/机票）' : '') + ' · ' + (i.id === inv.id ? '<b>' + esc(i.f.seller || i.file) + '</b>（这张）' : '<a href="#review-' + i.id + '">' + esc(i.f.seller || i.file) + '</a>') + ' ' + fmt(num(i.f.total)) + '</li>';
+    }).join('') + '</ol>' +
+    '<div class="' + (t.allow ? 'status-ok' : 'sub') + '" id="trip-allow">出差补助：' + esc(allowText(t)) + (t.allow ? '，生成凭证时自动加上' : '') + '</div>';
+  if (t.mismatch.length) h += '<div class="status-bad">住宿日期超出了往返车票的日期，请核对行程</div>';
+  if (!t.tickets.length) h += '<div class="sub">这次出差没有往返车票或机票（自驾、车票另报的可以忽略）</div>';
+  h += '<div class="actions"><button class="btn sm" type="button" data-act="trip-none" data-id="' + inv.id + '">这张不算出差</button>' +
+    (others.length ? '<select id="trip-merge" class="inp" style="width:auto;height:32px" aria-label="并到另一次出差">' + others.map(function(x){ return '<option value="' + esc(x.key) + '">' + esc(tripLabel(x)) + '</option>'; }).join('') + '</select><button class="btn sm" type="button" data-act="trip-merge" data-id="' + inv.id + '">和这次出差合并</button>' : '') +
+    (t.manual ? '<button class="linkbtn muted" type="button" data-act="trip-unmerge" data-id="' + inv.id + '">取消合并，恢复自动归集</button>' : '') + '</div>';
+  return h + '</section>';
+}
+function tripAction(act, t){
+  var inv = findInv(t.getAttribute('data-id')); if (!inv) return;
+  var tr = tripOf(inv);
+  if (act === 'trip-none'){ inv.tripMode = 'none'; delete inv.tripId; audLog('出差归集', invT(inv), '这张发票不算出差' + (tr ? '（原来在 ' + tripLabel(tr) + '）' : '')); }
+  else if (act === 'trip-auto'){ delete inv.tripMode; audLog('出差归集', invT(inv), '恢复自动归集'); }
+  else if (act === 'trip-merge' && tr){
+    var key = ($('#trip-merge') || {}).value, other = computeTrips().trips.filter(function(x){ return x.key === key; })[0];
+    if (!other) return;
+    var id = 'm:' + uid();
+    tr.invs.concat(other.invs).forEach(function(i){ i.tripId = id; });
+    audLog('出差归集', invT(inv), '合并两次出差：' + tripLabel(tr) + ' + ' + tripLabel(other));
+  }
+  else if (act === 'trip-unmerge' && tr){ tr.invs.forEach(function(i){ delete i.tripId; }); audLog('出差归集', invT(inv), '取消合并，恢复自动归集'); }
+  tripCache = null; save(); render();
 }
 
 /* ---------- 员工在邮件里写的说明 ---------- */
@@ -1735,8 +1873,17 @@ function genLines(invs){
     if (ded) lines.push({dc:'D', code: acct().taxCode, summary: '进项税额' + tail, amount: tx, dept: '', person: '', invId: inv.id, kind: 'tax', rule: '可抵扣：' + (/专用/.test(f.type) ? '专用发票' : '旅客运输票据' + (num(f.tax) > 0 ? '' : '，按 9% 计算'))});
     total += T;
   });
+  // 出差补助：这张凭证里有某次出差的最后一张车票或住宿，就加上那次出差的补助
+  var done = {};
+  invs.forEach(function(inv){
+    var t = tripOf(inv);
+    if (!t || !t.allow || done[t.key] || t.lastAnchor !== inv) return;
+    done[t.key] = 1;
+    lines.push({dc:'D', code: travelCode(t.emp), summary: t.emp.name + '出差补助 ' + dstr(t.start) + (t.days > 1 ? '至' + dstr(t.end) : '') + ' ' + t.days + '天' + (t.city ? ' ' + t.city : ''), amount: t.allow.amount, dept: t.emp.dept || '', person: '', kind: 'allow', rule: '出差补助：' + allowText(t)});
+    total += t.allow.amount;
+  });
   var name = personLabel(invs[0]) || '未指定报销人';
-  lines.push({dc:'C', code: acct().creditCode, summary: '应付' + name + '报销款（' + invs.length + ' 张发票）', amount: r2(total), dept: '', person: e0 ? e0.id : '', kind: 'credit', rule: '员工报销款'});
+  lines.push({dc:'C', code: acct().creditCode, summary: '应付' + name + '报销款（' + invs.length + ' 张发票' + (Object.keys(done).length ? '，含出差补助' : '') + '）', amount: r2(total), dept: '', person: e0 ? e0.id : '', kind: 'credit', rule: '员工报销款'});
   return lines;
 }
 // 待确认的凭证：符合条件的发票按「报销人 + 提交日期」合并；手动改过的草稿会保留
@@ -1776,9 +1923,9 @@ function validateV(v){
   });
   if (!v.lines.length) errs.push('没有分录');
   if (Math.abs(r2(d) - r2(c)) > 0.001) errs.push('借贷不平衡：借方 ' + fmtN(r2(d)) + '，贷方 ' + fmtN(r2(c)) + '，相差 ' + fmtN(Math.abs(r2(d - c))));
-  var invTotal = r2(v.invIds.reduce(function(s, id){ var i = findInv(id); return s + (i ? num(i.f.total) || 0 : 0); }, 0));
+  var invTotal = r2(v.invIds.reduce(function(s, id){ var i = findInv(id); return s + (i ? num(i.f.total) || 0 : 0); }, 0) + v.lines.reduce(function(s, l){ return s + (l.kind === 'allow' ? num(l.amount) || 0 : 0); }, 0));
   var warns = [];
-  if (Math.abs(r2(c) - invTotal) > 0.001) warns.push('贷方合计 ' + fmtN(r2(c)) + ' 和发票价税合计 ' + fmtN(invTotal) + ' 不一样，请确认是有意调整');
+  if (Math.abs(r2(c) - invTotal) > 0.001) warns.push('贷方合计 ' + fmtN(r2(c)) + ' 和发票价税合计' + (v.lines.some(function(l){ return l.kind === 'allow'; }) ? '（含出差补助）' : '') + ' ' + fmtN(invTotal) + ' 不一样，请确认是有意调整');
   if (v.stale) warns.push('这张凭证改过以后，发票有了变化（新增或撤下了发票），建议点「按规则重新生成」');
   return {errs:errs, warns:warns, d:r2(d), c:r2(c)};
 }
@@ -2171,6 +2318,7 @@ document.addEventListener('click', function(e){
       audLog('校验原件', invT(av), res.msg); toast(res.msg);
     });
   }
+  else if (/^trip-/.test(act)) tripAction(act, t);
   else if (act === 'op-edit') openOperator();
   else if (act === 'ntf-open') openNotice(t.getAttribute('data-to'));
   else if (act === 'ntf-cancel') closeNotice();
@@ -2232,13 +2380,13 @@ document.addEventListener('click', function(e){
     var gn = ($('#sg-new') || {}).value; gn = String(gn || '').trim();
     if (!gn){ toast('请填写职级名称'); return; }
     if (std().grades.indexOf(gn) >= 0){ toast('已经有「' + gn + '」了'); return; }
-    std().grades.push(gn); std().hotel[gn] = std().tiers.map(function(){ return null; }); std().meal[gn] = null;
+    std().grades.push(gn); std().hotel[gn] = std().tiers.map(function(){ return null; }); std().meal[gn] = null; std().allow[gn] = std().tiers.map(function(){ return null; });
     cfgLog('添加职级：' + gn); save(); render(); toast('已添加职级「' + gn + '」，请填写标准');
   }
   else if (act === 'sg-del'){
     var gd = t.getAttribute('data-g'), used = emps().filter(function(e){ return e.grade === gd; }).length;
     if (used){ toast('还有 ' + used + ' 个员工是「' + gd + '」，先到员工页改掉再删'); return; }
-    std().grades = std().grades.filter(function(x){ return x !== gd; }); delete std().hotel[gd]; delete std().meal[gd];
+    std().grades = std().grades.filter(function(x){ return x !== gd; }); delete std().hotel[gd]; delete std().meal[gd]; delete std().allow[gd];
     cfgLog('删除职级：' + gd); save(); render();
   }
   else if (act === 'co-add'){ cfg.companies.push({name:'', taxId:''}); cfgLog('添加公司抬头'); save(); render(); var ins = $$('[data-co][data-key="name"]'); if (ins.length) ins[ins.length-1].focus(); }
@@ -2320,6 +2468,11 @@ document.addEventListener('change', function(e){
   if (t.hasAttribute('data-hotel')){
     var hg = t.getAttribute('data-hotel'), hi = Number(t.getAttribute('data-ti')), hv = num(t.value), H = std().hotel;
     H[hg] = H[hg] || []; cfgLog(hg + ' · ' + std().tiers[hi].name + ' 住宿标准：' + fv(H[hg][hi]) + ' → ' + fv(hv)); H[hg][hi] = hv; save(); toast('已保存'); return;
+  }
+  if (t.id === 'allow-on'){ std().allowOn = t.checked; cfgLog((t.checked ? '启用' : '关闭') + '出差补助'); save(); render(); return; }
+  if (t.hasAttribute('data-allow')){
+    var ag = t.getAttribute('data-allow'), ai2 = Number(t.getAttribute('data-ti')), av = num(t.value), AL = std().allow;
+    AL[ag] = AL[ag] || []; cfgLog(ag + ' · ' + std().tiers[ai2].name + ' 出差补助：' + fv(AL[ag][ai2]) + ' → ' + fv(av)); AL[ag][ai2] = av; save(); toast('已保存'); return;
   }
   if (t.hasAttribute('data-meal')){ var mg = t.getAttribute('data-meal'), mv = num(t.value); cfgLog(mg + ' 餐饮人均标准：' + fv(std().meal[mg]) + ' → ' + fv(mv)); std().meal[mg] = mv; save(); toast('已保存'); return; }
   if (t.hasAttribute('data-tier')){ var tr = std().tiers[Number(t.getAttribute('data-tier'))]; var nc = t.value.split(/[\s,，、;；]+/).filter(Boolean).join(' '); cfgLog(tr.name + '：' + nc); tr.cities = nc; save(); toast('已保存'); return; }

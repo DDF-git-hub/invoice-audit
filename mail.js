@@ -6,13 +6,13 @@ const zlib = require('zlib');
 const X = require('./renderer/extract.js');
 
 const PRESETS = {
-  qq: { name: 'QQ 邮箱', host: 'imap.qq.com', port: 993, secure: true, domain: /@(qq|foxmail|vip\.qq)\.com$/i },
-  exmail: { name: '腾讯企业邮', host: 'imap.exmail.qq.com', port: 993, secure: true },
-  '163': { name: '网易 163 邮箱', host: 'imap.163.com', port: 993, secure: true, domain: /@163\.com$/i },
-  '126': { name: '网易 126 邮箱', host: 'imap.126.com', port: 993, secure: true, domain: /@126\.com$/i },
-  qiye163: { name: '网易企业邮', host: 'imap.qiye.163.com', port: 993, secure: true },
-  aliyun: { name: '阿里企业邮箱', host: 'imap.qiye.aliyun.com', port: 993, secure: true },
-  custom: { name: '其他邮箱（手动填写服务器）', host: '', port: 993, secure: true }
+  qq: { name: 'QQ 邮箱', host: 'imap.qq.com', port: 993, secure: true, smtp: 'smtp.qq.com', domain: /@(qq|foxmail|vip\.qq)\.com$/i },
+  exmail: { name: '腾讯企业邮', host: 'imap.exmail.qq.com', port: 993, secure: true, smtp: 'smtp.exmail.qq.com' },
+  '163': { name: '网易 163 邮箱', host: 'imap.163.com', port: 993, secure: true, smtp: 'smtp.163.com', domain: /@163\.com$/i },
+  '126': { name: '网易 126 邮箱', host: 'imap.126.com', port: 993, secure: true, smtp: 'smtp.126.com', domain: /@126\.com$/i },
+  qiye163: { name: '网易企业邮', host: 'imap.qiye.163.com', port: 993, secure: true, smtp: 'smtp.qiye.163.com' },
+  aliyun: { name: '阿里企业邮箱', host: 'imap.qiye.aliyun.com', port: 993, secure: true, smtp: 'smtp.qiye.aliyun.com' },
+  custom: { name: '其他邮箱（手动填写服务器）', host: '', port: 993, secure: true, smtp: '' }
 };
 
 const INVOICE_EXT = /\.(pdf|ofd|xml|zip)$/i;
@@ -219,4 +219,30 @@ async function scan(cfg, opts, seen, net, onProgress) {
   return { messages, senders, days };
 }
 
-module.exports = { PRESETS, test, scan };
+/* ---------- 回信通知报销人（SMTP，用同一个授权码） ---------- */
+function smtpError(e) {
+  const t = String((e && (e.response || e.message)) || e || '');
+  if ((e && e.code === 'EAUTH') || /535|auth/i.test(t)) return fail('mail_auth', '发信失败：授权码不对，或邮箱没有开启 SMTP 服务（QQ 邮箱在「设置 → 账号与安全」里开启 IMAP/SMTP 服务）');
+  if (e && /ECONNECTION|ETIMEDOUT|ESOCKET|EDNS/.test(e.code || '')) return fail('mail_net', '连不上发信服务器，请检查网络；公司网络可能拦截了端口 465');
+  if (e && e.code === 'EENVELOPE') return fail('mail_to', '收件人邮箱不对：' + t.slice(0, 120));
+  return fail('mail_error', '发信出错：' + t.slice(0, 200));
+}
+async function send(cfg, m) {
+  const nodemailer = require('nodemailer');
+  if (!cfg.smtpHost || !cfg.user || !cfg.pass) throw fail('mail_config', '请先在「邮箱收票」里设置好收票邮箱');
+  if (!m || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(m.to || ''))) throw fail('mail_to', '收件人邮箱不对');
+  const secure = cfg.smtpPort === 465 ? true : cfg.secure !== false && cfg.smtpPort !== 25 && cfg.smtpPort !== 587 && cfg.smtpPort !== 3025;
+  const t = nodemailer.createTransport({ host: cfg.smtpHost, port: cfg.smtpPort, secure, auth: { user: cfg.user, pass: cfg.pass },
+    connectionTimeout: 20000, greetingTimeout: 20000, socketTimeout: 60000, tls: { servername: cfg.smtpHost } });
+  try {
+    const r = await t.sendMail({
+      from: { name: String(m.fromName || '财务部').slice(0, 40), address: cfg.user }, to: m.to,
+      subject: String(m.subject || '').slice(0, 200), text: String(m.text || ''),
+      inReplyTo: m.inReplyTo || undefined, references: m.inReplyTo ? [m.inReplyTo] : undefined
+    });
+    return { messageId: r.messageId || '', accepted: r.accepted || [] };
+  } catch (e) { throw smtpError(e); }
+  finally { t.close(); }
+}
+
+module.exports = { PRESETS, test, scan, send };

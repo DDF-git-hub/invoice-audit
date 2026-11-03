@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld('api', {
   mailTest: () => ipcRenderer.invoke('mail:test'),
   mailScan: (opts) => ipcRenderer.invoke('mail:scan', opts),
   mailImport: (scanId, ids) => ipcRenderer.invoke('mail:import', { scanId, ids }),
+  mailSend: (m) => ipcRenderer.invoke('mail:send', m),
   mailOpenLink: (url) => ipcRenderer.invoke('mail:openLink', url),
   onMailProgress: (cb) => { ipcRenderer.on('mail-progress', (_e, t) => cb(t)); }
 });

@@ -268,6 +268,8 @@ function mailCfg() {
     host: preset === 'custom' ? (s.host || '') : p.host,
     port: preset === 'custom' ? (Number(s.port) || 993) : p.port,
     secure: preset === 'custom' ? s.secure !== false : p.secure,
+    smtpHost: preset === 'custom' ? (s.smtpHost || String(s.host || '').replace(/^imap\./i, 'smtp.')) : p.smtp,
+    smtpPort: preset === 'custom' ? (Number(s.smtpPort) || 465) : 465,
     pass: decrypt(s.pass)
   };
 }
@@ -275,7 +277,7 @@ function mailPublic() {
   const c = mailCfg();
   const presets = {};
   Object.keys(mail.PRESETS).forEach((k) => { const p = mail.PRESETS[k]; presets[k] = { name: p.name, host: p.host, port: p.port, secure: p.secure }; });
-  return { preset: c.preset, user: c.user, host: c.host, port: c.port, secure: c.secure, hasPass: !!c.pass, presets };
+  return { preset: c.preset, user: c.user, host: c.host, port: c.port, secure: c.secure, smtpHost: c.smtpHost, smtpPort: c.smtpPort, hasPass: !!c.pass, presets };
 }
 function mailSave(input) {
   const old = readJson(MAIL_SETTINGS(), {});
@@ -283,6 +285,7 @@ function mailSave(input) {
     preset: mail.PRESETS[input.preset] ? input.preset : (old.preset || 'qq'),
     user: String(input.user || '').trim(),
     host: String(input.host || '').trim(), port: Number(input.port) || 993, secure: input.secure !== false,
+    smtpHost: String(input.smtpHost || '').trim(), smtpPort: Number(input.smtpPort) || 0,
     pass: old.pass || null
   };
   if (typeof input.pass === 'string' && input.pass.trim()) out.pass = encrypt(input.pass.replace(/\s/g, ''));
@@ -312,7 +315,7 @@ ipcMain.handle('mail:import', wrap(async ({ scanId, ids }) => {
   const out = [];
   mailCache.messages.forEach((m) => m.files.forEach((f) => {
     if (!want.has(f.id)) return;
-    out.push({ name: f.name, data: f.data, from: m.from, fromName: m.fromName, subject: m.subject, date: m.date });
+    out.push({ name: f.name, data: f.data, from: m.from, fromName: m.fromName, subject: m.subject, date: m.date, msgId: m.msgId });
     seen.add(f.key); f.seen = true;
   }));
   writeJsonAtomic(MAIL_SEEN(), Array.from(seen).slice(-20000));
@@ -327,6 +330,7 @@ ipcMain.handle('ledger:reset', wrap(async () => {
   try { out.u8Demo = (readJson(demo, { vouchers: [] }).vouchers || []).length; fs.unlinkSync(demo); } catch (e) { /* 没有就算了 */ }
   return out;
 }));
+ipcMain.handle('mail:send', wrap(async (m) => mail.send(mailCfg(), m || {})));
 ipcMain.handle('mail:openLink', wrap(async (url) => { if (/^https?:\/\//i.test(String(url))) await shell.openExternal(String(url)); return true; }));
 
 /* ---------------- 用友 U8 ---------------- */

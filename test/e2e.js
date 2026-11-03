@@ -126,6 +126,7 @@ fs.mkdirSync(out, { recursive: true });
     await page.fill('#mail-pass', 'test-password');
     await page.fill('#mail-host', '127.0.0.1');
     await page.fill('#mail-port', String(process.env.MAIL_IMAP_PORT || 3143));
+    await page.fill('#mail-smtp-port', String(process.env.MAIL_SMTP_PORT || 3025));
     await page.uncheck('#mail-secure');
     await page.screenshot({ path: path.join(out, '06-邮箱设置.png'), fullPage: true });
     await page.click('[data-act="mail-test"]');
@@ -459,6 +460,50 @@ fs.mkdirSync(out, { recursive: true });
     await page.evaluate(() => { location.hash = 'rules'; });
     await page.waitForSelector('section[aria-label="职级与城市标准"]');
     await page.screenshot({ path: path.join(out, '20-规则设置.png'), fullPage: true });
+  }
+
+  // ---------- 回邮件通知报销人 ----------
+  if (process.env.MAIL_TEST) {
+    console.log('\n[邮件通知报销人]');
+    const chk = (ok, msg) => { console.log((ok ? '  ✓ ' : '  ✗ ') + msg); if (!ok) mustFail++; };
+    await page.evaluate(() => { location.hash = 'ledger'; });
+    await page.waitForTimeout(500);
+    const btns = await page.evaluate(() => Array.from(document.querySelectorAll('.notice-bar [data-act="ntf-open"]')).map((b) => b.getAttribute('data-to') + ' ' + b.textContent));
+    console.log('    待通知：' + btns.join('；'));
+    const target = 'zhangsan@test.local';
+    const has = btns.some((b) => b.indexOf(target) === 0);
+    chk(has, '审核台提示有问题发票还没通知报销人');
+    if (has) {
+      await page.click('.notice-bar [data-act="ntf-open"][data-to="' + target + '"]');
+      await page.waitForSelector('#ntf-body');
+      const subject = await page.inputValue('#ntf-subject'), body = await page.inputValue('#ntf-body');
+      chk(/张三，您好/.test(body) && /问题：/.test(body) && /请：/.test(body), '回信草稿写好了问题和处理办法');
+      chk(!/餐费\.pdf/.test(body), '已经人工通过的发票不在回信里');
+      await page.screenshot({ path: path.join(out, '22-邮件通知报销人.png') });
+      await page.click('[data-act="ntf-send"]');
+      for (let k = 0; k < 40 && await page.$('#ntf-modal'); k++) await page.waitForTimeout(250);
+      const err = await page.evaluate(() => { const e = document.querySelector('#ntf-err'); return e ? e.textContent : ''; });
+      chk(!err, '发送成功' + (err ? '：' + err : ''));
+      await page.waitForTimeout(800);
+      // 去张三的邮箱看有没有收到
+      const { ImapFlow } = require('imapflow');
+      const c = new ImapFlow({ host: '127.0.0.1', port: Number(process.env.MAIL_IMAP_PORT || 3143), secure: false, auth: { user: target, pass: 'x' }, logger: false });
+      let got = null;
+      try {
+        await c.connect();
+        const lock = await c.getMailboxLock('INBOX');
+        try { for await (const m of c.fetch('1:*', { envelope: true })) { if (m.envelope.subject === subject) got = m.envelope; } } finally { lock.release(); }
+        await c.logout();
+      } catch (e) { console.log('    读张三邮箱出错：' + e.message); }
+      chk(!!got && got.inReplyTo && got.from[0].address === 'finance@test.local', '张三的邮箱收到回信（从收票邮箱发出，回复他原来的邮件）：' + subject);
+      const led = JSON.parse(fs.readFileSync(path.join(ud, 'ledger.json'), 'utf8'));
+      const notified = led.invoices.filter((i) => i.notice && i.notice.to === target);
+      chk(notified.length > 0, '回信里的 ' + notified.length + ' 张发票标为已通知');
+      const logs = fs.readFileSync(path.join(ud, 'audit-log.jsonl'), 'utf8');
+      chk(/邮件通知报销人/.test(logs), '操作记录里有这次通知');
+      const still = await page.evaluate((t) => !!document.querySelector('.notice-bar [data-to="' + t + '"]'), target);
+      chk(!still, '通知过以后不再提示');
+    }
   }
 
   // ---------- 清空台账后可以重新演示 ----------

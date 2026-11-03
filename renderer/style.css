@@ -262,3 +262,9 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13px;min-width:880px}
 .loglist .sub{flex-basis:100%;overflow-wrap:anywhere}
 .vlog summary{cursor:pointer;padding:2px 0}
 .vlog .loglist{margin-top:6px}
+
+/* 待通知报销人 */
+.notice-bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;justify-content:space-between;border-left:4px solid var(--accent)}
+.notice-bar > div:first-child{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1 1 320px}
+.notice-done{color:var(--muted)}
+#ntf-body{font-family:var(--f-sans, inherit);line-height:1.6}

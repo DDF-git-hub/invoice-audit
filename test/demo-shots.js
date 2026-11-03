@@ -118,6 +118,7 @@ const shots = [];
   await page.fill('#mail-pass', 'demo');
   await page.fill('#mail-host', '127.0.0.1');
   await page.fill('#mail-port', String(IMAP));
+  await page.fill('#mail-smtp-port', String(SMTP));
   await page.uncheck('#mail-secure');
   await page.click('[data-act="mail-test"]');
   await page.waitForSelector('[data-act="mail-edit"], .status-bad', { timeout: 30000 });

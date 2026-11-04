@@ -1,0 +1,145 @@
+[
+  {
+    "name": "sdp-canyin.pdf",
+    "method": "pdf-text",
+    "conf": 0.97,
+    "status": "ready",
+    "err": "",
+    "notes": "",
+    "bad": []
+  },
+  {
+    "name": "sdp-zhuanpiao.pdf",
+    "method": "pdf-text",
+    "conf": 0.97,
+    "status": "ready",
+    "err": "",
+    "notes": "",
+    "bad": []
+  },
+  {
+    "name": "sdp-geren.pdf",
+    "method": "pdf-text",
+    "conf": 0.97,
+    "status": "ready",
+    "err": "",
+    "notes": "",
+    "bad": []
+  },
+  {
+    "name": "old-zhusu.pdf",
+    "method": "pdf-text",
+    "conf": 0.97,
+    "status": "ready",
+    "err": "",
+    "notes": "",
+    "bad": []
+  },
+  {
+    "name": "sdp-mingxi.pdf",
+    "method": "pdf-text",
+    "conf": 0.97,
+    "status": "ready",
+    "err": "",
+    "notes": "",
+    "bad": []
+  },
+  {
+    "name": "rail.pdf",
+    "method": "pdf-text",
+    "conf": 0.97,
+    "status": "ready",
+    "err": "",
+    "notes": "金额和税额按 9% 由票价换算",
+    "bad": []
+  },
+  {
+    "name": "sdp-canyin-screenshot.png",
+    "method": "ocr",
+    "conf": 0.92,
+    "status": "ready",
+    "err": "",
+    "notes": "",
+    "bad": []
+  },
+  {
+    "name": "old-zhusu-hd.png",
+    "method": "ocr",
+    "conf": 0.92,
+    "status": "ready",
+    "err": "",
+    "notes": "",
+    "bad": []
+  },
+  {
+    "name": "sdp-geren-screenshot.png",
+    "method": "ocr",
+    "conf": 0.92,
+    "status": "ready",
+    "err": "",
+    "notes": "",
+    "bad": [
+      {
+        "k": "seller",
+        "got": "滴六滴出行科技有限公司",
+        "want": "滴滴出行科技有限公司"
+      }
+    ]
+  },
+  {
+    "name": "sdp-mingxi-screenshot.png",
+    "method": "ocr",
+    "conf": 0.92,
+    "status": "ready",
+    "err": "",
+    "notes": "",
+    "bad": [
+      {
+        "k": "lines[1].unit",
+        "got": "m3",
+        "want": "m³"
+      },
+      {
+        "k": "lines[2].unit",
+        "got": "邑",
+        "want": "吨"
+      }
+    ]
+  },
+  {
+    "name": "sdp-zhuanpiao-photo.jpg",
+    "method": "ocr",
+    "conf": 0.92,
+    "status": "ready",
+    "err": "",
+    "notes": "",
+    "bad": []
+  },
+  {
+    "name": "old-zhusu-stsong.pdf",
+    "method": "pdf-text",
+    "conf": 0.97,
+    "status": "ready",
+    "err": "",
+    "notes": "",
+    "bad": []
+  },
+  {
+    "name": "sdp-canyin.xml",
+    "method": "xml",
+    "conf": 0.99,
+    "status": "ready",
+    "err": "",
+    "notes": "",
+    "bad": []
+  },
+  {
+    "name": "sdp-zhuanpiao.ofd",
+    "method": "ofd",
+    "conf": 0.95,
+    "status": "ready",
+    "err": "",
+    "notes": "",
+    "bad": []
+  }
+]
